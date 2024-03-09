@@ -33,7 +33,7 @@ pub(crate) struct GamePlayerState {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct GameClientState {
+pub(crate) struct GameClientRoom {
     pub(crate) state: GamePhase,
     pub(crate) players: Vec<GameClientPlayer>,
     pub(crate) pot: u64,

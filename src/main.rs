@@ -7,6 +7,7 @@ use axum::{
 use tracing::info;
 
 mod cards;
+mod game;
 mod models;
 mod routes;
 mod state;
@@ -24,10 +25,11 @@ async fn main() {
     let app = Router::new()
         .with_state(state)
         .route("/api/v1/room", get(routes::room))
-        .route("/api/v1/reset", post(routes::reset))
-        .route("/api/v1/player", get(routes::player))
-        .route("/api/v1/play", post(routes::play))
-        .route("/api/v1/join", post(routes::join));
+        .route("/api/v1/room/close", post(routes::close_room))
+        .route("/api/v1/room/reset", post(routes::reset_room))
+        .route("/api/v1/player/:player_id", get(routes::player))
+        .route("/api/v1/join", post(routes::join))
+        .route("/api/v1/play", post(routes::play));
 
     // run our app with hyper, listening globally on port 5000
     let listener = tokio::net::TcpListener::bind("0.0.0.0:5000").await.unwrap();
@@ -38,7 +40,7 @@ async fn main() {
 mod utils {
     use std::collections::BTreeMap;
 
-    use crate::state::Player;
+    use crate::state::{Player, PlayerId};
 
     pub fn now() -> u64 {
         use std::time::{SystemTime, UNIX_EPOCH};
@@ -49,13 +51,13 @@ mod utils {
     }
 
     pub fn get_next_players_turn(
-        players: &BTreeMap<String, Player>,
-        current_player_id: &str,
-    ) -> Option<String> {
+        players: &BTreeMap<PlayerId, Player>,
+        current_player_id: &PlayerId,
+    ) -> Option<PlayerId> {
         players
             .iter()
             .chain(players.iter())
-            .skip_while(|(id, _)| *id != &current_player_id)
+            .skip_while(|(id, _)| id != &current_player_id)
             .skip(1)
             .next()
             .map(|(id, _)| id.clone())

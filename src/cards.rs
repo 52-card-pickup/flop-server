@@ -73,7 +73,148 @@ pub enum HandStrength {
 
 impl Card {
     pub fn evaluate_hand(player_cards: &(Self, Self), table_cards: &[Self]) -> (HandStrength, u64) {
-        todo!()
+        let mut all_cards = vec![player_cards.0.clone(), player_cards.1.clone()];
+        all_cards.extend_from_slice(table_cards);
+        all_cards.sort_by_key(|c| c.value.clone() as u64);
+
+        let by_suite: BTreeMap<_, Vec<_>> = all_cards.iter().fold(BTreeMap::new(), |mut acc, c| {
+            acc.entry(c.suite.clone()).or_default().push(c);
+            acc
+        });
+
+        let by_value: BTreeMap<_, Vec<_>> = all_cards.iter().fold(BTreeMap::new(), |mut acc, c| {
+            acc.entry(c.value.clone()).or_default().push(c);
+            acc
+        });
+
+        let deduped_values: BTreeSet<_> =
+            all_cards.iter().map(|c| c.value.clone() as u64).collect();
+        let deduped_values: Vec<_> = deduped_values.into_iter().collect();
+
+        // check for royal flush
+        // TODO: not sure this will work
+        let royal_flush = by_suite.iter().find_map(|(_suite, cards)| {
+            if cards.len() >= 5 {
+                if cards
+                    .iter()
+                    .skip_while(|c| c.value != CardValue::Ten)
+                    .take(5)
+                    .map(|c| c.value.clone() as u64)
+                    .eq(10..=14)
+                {
+                    Some(cards.iter().map(|c| c.value.clone() as u64).sum())
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        });
+
+        // check for straight flush
+        let straight_flush = by_suite.iter().find_map(|(_suite, cards)| {
+            cards
+                .iter()
+                .map(|c| c.value.clone() as u64)
+                .collect::<Vec<_>>()
+                .windows(5)
+                .find_map(|w| if w[4] - w[0] == 4 { Some(w[4]) } else { None })
+        });
+
+        // check for four of a kind
+        let four_of_a_kind = by_value.iter().find_map(|(value, cards)| {
+            if cards.len() == 4 {
+                Some(value.clone() as u64)
+            } else {
+                None
+            }
+        });
+
+        // check for full house
+        let full_house = by_value.iter().find_map(|(value, cards)| {
+            if cards.len() == 3 {
+                let pair = by_value.iter().find_map(|(value, cards)| {
+                    if cards.len() == 2 {
+                        Some(value.clone() as u64)
+                    } else {
+                        None
+                    }
+                });
+                pair.map(|pair| value.clone() as u64 + pair)
+            } else {
+                None
+            }
+        });
+
+        // check for flush
+        let flush = by_suite.iter().find_map(|(_suite, cards)| {
+            if cards.len() >= 5 {
+                Some(cards.iter().map(|c| c.value.clone() as u64).sum())
+            } else {
+                None
+            }
+        });
+
+        // check for straight
+        let straight =
+            deduped_values
+                .windows(5)
+                .find_map(|w| if w[4] - w[0] == 4 { Some(w[4]) } else { None });
+
+        // check for three of a kind
+        let three_of_a_kind = by_value.iter().find_map(|(value, cards)| {
+            if cards.len() == 3 {
+                Some(value.clone() as u64)
+            } else {
+                None
+            }
+        });
+
+        // check for two pair
+        let two_pair = by_value.iter().find_map(|(value_1, cards)| {
+            if cards.len() == 2 {
+                if let Some(pair) = by_value.iter().find_map(|(value_2, cards)| {
+                    if cards.len() == 2 && value_1 != value_2 {
+                        Some(value_2.clone() as u64)
+                    } else {
+                        None
+                    }
+                }) {
+                    Some(value_1.clone() as u64 + pair)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        });
+
+        // check for one pair
+        let one_pair = by_value.iter().find_map(|(value, cards)| {
+            if cards.len() == 2 {
+                Some(value.clone() as u64)
+            } else {
+                None
+            }
+        });
+
+        // check for high card
+        // TODO: not sure this will work
+        let high_card: u64 = deduped_values.iter().rev().take(5).sum();
+
+        let score = None
+            .or(royal_flush.map(|x| (HandStrength::RoyalFlush, x)))
+            .or(straight_flush.map(|x| (HandStrength::StraightFlush, x)))
+            .or(four_of_a_kind.map(|x| (HandStrength::FourOfAKind, x)))
+            .or(full_house.map(|x| (HandStrength::FullHouse, x)))
+            .or(flush.map(|x| (HandStrength::Flush, x)))
+            .or(straight.map(|x| (HandStrength::Straight, x)))
+            .or(three_of_a_kind.map(|x| (HandStrength::ThreeOfAKind, x)))
+            .or(two_pair.map(|x| (HandStrength::TwoPair, x)))
+            .or(one_pair.map(|x| (HandStrength::OnePair, x)))
+            .unwrap_or((HandStrength::HighCard, high_card));
+
+        score
     }
 }
 
