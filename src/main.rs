@@ -1,12 +1,11 @@
 use std::sync::{Arc, RwLock};
 
-use axum::{
-    routing::{get, post},
-    Router,
-};
+use aide::{axum::ApiRouter, openapi::OpenApi, transform::TransformOpenApi};
+use axum::Extension;
 use tracing::info;
 
 mod cards;
+mod doc_routes;
 mod game;
 mod models;
 mod routes;
@@ -17,24 +16,46 @@ async fn main() {
     // initialize tracing
     tracing_subscriber::fmt::init();
 
+    // initialize aide
+    aide::gen::on_error(|error| {
+        println!("{error}");
+    });
+    aide::gen::extract_schemas(true);
+    let mut api = OpenApi::default();
+
     // initialize state
     let state = state::State::default();
     let state: state::SharedState = Arc::new(RwLock::new(state));
 
     // build our application with a route
-    let app = Router::new()
-        .with_state(state)
-        .route("/api/v1/room", get(routes::room))
-        .route("/api/v1/room/close", post(routes::close_room))
-        .route("/api/v1/room/reset", post(routes::reset_room))
-        .route("/api/v1/player/:player_id", get(routes::player))
-        .route("/api/v1/join", post(routes::join))
-        .route("/api/v1/play", post(routes::play));
+    let app = ApiRouter::new()
+        .nest_api_service("/api/v1", routes::api_routes(state.clone()))
+        .nest_api_service("/docs", doc_routes::docs_routes(state.clone()))
+        .finish_api_with(&mut api, api_docs)
+        .layer(Extension(Arc::new(api)));
 
     // run our app with hyper, listening globally on port 5000
     let listener = tokio::net::TcpListener::bind("0.0.0.0:5000").await.unwrap();
+    let docs_url = docs_url(listener.local_addr().unwrap());
     info!("listening on {}", listener.local_addr().unwrap());
+    info!("Example docs are accessible at {}", docs_url);
+
     axum::serve(listener, app).await.unwrap();
+}
+
+fn api_docs(api: TransformOpenApi) -> TransformOpenApi {
+    api.title("flop: The Party Poker Game")
+        .summary("API for poker game")
+        .description(include_str!("../README.md"))
+}
+
+fn docs_url(listener: std::net::SocketAddr) -> String {
+    match listener {
+        std::net::SocketAddr::V4(addr) if addr.ip().is_unspecified() => {
+            format!("http://localhost:{}/docs", addr.port())
+        }
+        addr => format!("http://{}/docs", addr),
+    }
 }
 
 mod utils {
@@ -56,7 +77,6 @@ mod utils {
     ) -> Option<PlayerId> {
         players
             .iter()
-            .chain(players.iter())
             .skip_while(|(id, _)| id != &current_player_id)
             .skip(1)
             .next()
