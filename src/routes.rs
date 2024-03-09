@@ -10,7 +10,7 @@ use tracing::info;
 type JsonResult<T> = Result<Json<T>, StatusCode>;
 
 pub(crate) async fn room(Extension(state): Extension<SharedState>) -> Json<models::GameClientRoom> {
-    let state = state.read().unwrap().clone();
+    let state = state.read().unwrap();
 
     let game_client_state = models::GameClientRoom {
         state: game::game_phase(&state),
@@ -31,7 +31,7 @@ pub(crate) async fn player(
     let player = validate_player(&player_id, &state)?;
 
     Ok(Json(models::GamePlayerState {
-        state: models::GamePhase::Playing,
+        state: game::game_phase(&state),
         balance: player.balance,
         cards: game::cards_in_hand(&state, &player.id),
         your_turn: state.players_turn == Some(player.id),
@@ -73,6 +73,14 @@ pub(crate) async fn join(
 ) -> JsonResult<models::JoinResponse> {
     let mut state = state.write().unwrap();
 
+    if payload.name.is_empty()
+        || payload.name.len() > 20
+        || payload.name.contains(|c: char| c.is_control())
+    {
+        info!("Player failed to join: name is invalid");
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
     let id = match game::add_new_player(&mut state, &payload.name) {
         Ok(id) => id,
         Err(err) => {
@@ -87,14 +95,17 @@ pub(crate) async fn join(
 }
 
 pub(crate) async fn close_room(Extension(state): Extension<SharedState>) -> JsonResult<()> {
-    let mut state = state.write().unwrap().clone();
+    let mut state = state.write().unwrap();
 
-    if state.status != state::GameStatus::Joining {
-        info!("Failed to close room: game is not in joining state");
+    if state.status == state::GameStatus::Playing {
+        info!("Failed to close room: game already started");
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    state.status = state::GameStatus::Playing;
+    game::start_game(&mut state).map_err(|err| {
+        info!("Failed to close room: {}", err);
+        StatusCode::BAD_REQUEST
+    })?;
 
     state.last_update = now();
     info!("Room closed for new players, game started");

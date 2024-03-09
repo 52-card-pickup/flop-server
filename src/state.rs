@@ -9,7 +9,7 @@ pub use id::PlayerId;
 
 pub type SharedState = Arc<RwLock<State>>;
 
-#[derive(Default, Clone)]
+#[derive(Default)]
 pub struct State {
     pub cards_on_table: Vec<Card>,
     pub players: BTreeMap<PlayerId, Player>,

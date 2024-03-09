@@ -230,18 +230,31 @@ pub enum CardSuite {
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum CardValue {
+    #[serde(rename = "ace")]
     Ace,
+    #[serde(rename = "2")]
     Two,
+    #[serde(rename = "3")]
     Three,
+    #[serde(rename = "4")]
     Four,
+    #[serde(rename = "5")]
     Five,
+    #[serde(rename = "6")]
     Six,
+    #[serde(rename = "7")]
     Seven,
+    #[serde(rename = "8")]
     Eight,
+    #[serde(rename = "9")]
     Nine,
+    #[serde(rename = "10")]
     Ten,
+    #[serde(rename = "jack")]
     Jack,
+    #[serde(rename = "queen")]
     Queen,
+    #[serde(rename = "king")]
     King,
 }
 

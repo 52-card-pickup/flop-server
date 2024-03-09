@@ -2,6 +2,26 @@ use crate::{cards, models, state, utils::get_next_players_turn};
 
 use tracing::info;
 
+pub(crate) fn start_game(state: &mut state::State) -> Result<(), String> {
+    if state.status == state::GameStatus::Playing {
+        return Err("Game already started".to_string());
+    }
+    if state.players.len() < 2 {
+        return Err("Not enough players".to_string());
+    }
+
+    state.cards_on_table.clear();
+    state.pot = 0;
+    state.players_turn = state.players.keys().next().cloned();
+    if state.status == state::GameStatus::Complete {
+        state.deck = cards::Deck::default();
+    }
+
+    state.status = state::GameStatus::Playing;
+
+    Ok(())
+}
+
 pub(crate) fn add_new_player(
     state: &mut state::State,
     player_name: &str,
@@ -78,13 +98,21 @@ fn complete_game(state: &mut state::State) {
             (p, score)
         })
         .collect();
+
+    for (player, score) in &scores {
+        info!(
+            "Player {} has score {} (rank {:?})",
+            player.id, score.1, score.0
+        );
+    }
+
     let winning_hand = scores.iter_mut().max_by_key(|(_, score)| *score).unwrap();
     let (winner, score) = winning_hand;
     winner.balance += state.pot;
     state.pot = 0;
     info!(
         "Game complete, winner: {}, score: {} (rank {:?})",
-        winner.name, score.1, score.0
+        winner.id, score.1, score.0
     );
 }
 
