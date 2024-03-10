@@ -119,11 +119,6 @@ pub(crate) async fn join(
 pub(crate) async fn close_room(State(state): State<SharedState>) -> JsonResult<()> {
     let mut state = state.write().unwrap();
 
-    if state.status == state::GameStatus::Playing {
-        info!("Failed to close room: game already started");
-        return Err(StatusCode::BAD_REQUEST);
-    }
-
     game::start_game(&mut state).map_err(|err| {
         info!("Failed to close room: {}", err);
         StatusCode::BAD_REQUEST

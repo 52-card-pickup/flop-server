@@ -48,7 +48,6 @@ pub(crate) fn start_game(state: &mut state::State) -> Result<(), String> {
 
     state.round.cards_on_table.clear();
     state.round.pot = 0;
-    reset_players(state);
     next_turn(state, None);
     if state.status == state::GameStatus::Complete {
         state.round.deck = cards::Deck::default();
@@ -127,6 +126,7 @@ fn next_turn(state: &mut state::State, current_player_id: Option<&state::PlayerI
     let next_player_id = if let Some(player_id) = current_player_id {
         get_next_players_turn(&state, player_id)
     } else {
+        reset_players(state);
         state.players.keys().next().cloned()
     };
     if let Some(next_player) = next_player_id
@@ -204,27 +204,36 @@ fn validate_player_stake(
 fn complete_round(state: &mut state::State) {
     match state.round.cards_on_table.len() {
         0 => {
-            for _ in 0..3 {
-                let next_card = state.round.deck.pop().unwrap();
-                state.round.cards_on_table.push(next_card);
-            }
-            reset_players(state);
+            place_cards_on_table(state, 3);
+            rotate_dealer(state);
             next_turn(state, None);
             state.round.raises.clear();
         }
         3 | 4 => {
-            let next_card = state.round.deck.pop().unwrap();
-            state.round.cards_on_table.push(next_card);
-            reset_players(state);
+            place_cards_on_table(state, 1);
+            rotate_dealer(state);
             next_turn(state, None);
             state.round.raises.clear();
         }
         5 => {
+            rotate_dealer(state);
             complete_game(state);
-            state.round.players_turn = None;
             state.round.raises.clear();
         }
         _ => unreachable!(),
+    }
+}
+
+fn place_cards_on_table(state: &mut state::State, count: usize) {
+    for _ in 0..count {
+        let next_card = state.round.deck.pop().unwrap();
+        state.round.cards_on_table.push(next_card);
+    }
+}
+
+fn rotate_dealer(state: &mut state::State) {
+    if let Some(old_dealer) = state.players.pop_first() {
+        state.players.insert(old_dealer.0, old_dealer.1);
     }
 }
 
@@ -251,6 +260,7 @@ fn complete_game(state: &mut state::State) {
     let (winner, score) = winning_hand;
     winner.balance += round.pot;
     round.pot = 0;
+    state.round.players_turn = None;
     info!(
         "Game complete, winner: {}, score: {} (rank {:?})",
         winner.id, score.1, score.0
