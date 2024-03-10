@@ -64,6 +64,7 @@ pub(crate) struct GameClientPlayer {
 
 #[derive(Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub(crate) enum GamePhase {
     Offline,
     Idle,

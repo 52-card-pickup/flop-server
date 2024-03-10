@@ -48,6 +48,7 @@ pub(crate) fn start_game(state: &mut state::State) -> Result<(), String> {
 
     state.round.cards_on_table.clear();
     state.round.pot = 0;
+    reset_players(state);
     next_turn(state, None);
     if state.status == state::GameStatus::Complete {
         state.round.deck = cards::Deck::default();
@@ -115,6 +116,13 @@ pub(crate) fn accept_player_stake(
     Ok(())
 }
 
+fn reset_players(state: &mut state::State) {
+    for player in state.players.values_mut() {
+        player.stake = 0;
+        player.folded = false;
+    }
+}
+
 fn next_turn(state: &mut state::State, current_player_id: Option<&state::PlayerId>) {
     let next_player_id = if let Some(player_id) = current_player_id {
         get_next_players_turn(&state, player_id)
@@ -176,9 +184,7 @@ fn validate_player_stake(
         models::PlayAction::Raise if stake == 0 => {
             return Err("Stake cannot be 0 for raise".to_string())
         }
-        models::PlayAction::Fold => unreachable!("Cannot handle fold action here"),
         models::PlayAction::Check => 0,
-        models::PlayAction::Call => call_amount(state).ok_or("No bets to call".to_string())?,
         models::PlayAction::Raise => {
             let call_amount = call_amount(state).unwrap_or(0);
             let min_raise_by = min_raise_by(state);
@@ -189,6 +195,8 @@ fn validate_player_stake(
             state.round.raises.push((player_id.clone(), stake));
             stake
         }
+        models::PlayAction::Call => call_amount(state).ok_or("No bets to call".to_string())?,
+        models::PlayAction::Fold => unreachable!("Cannot handle fold action here"),
     };
     Ok(stake)
 }
@@ -200,12 +208,14 @@ fn complete_round(state: &mut state::State) {
                 let next_card = state.round.deck.pop().unwrap();
                 state.round.cards_on_table.push(next_card);
             }
+            reset_players(state);
             next_turn(state, None);
             state.round.raises.clear();
         }
         3 | 4 => {
             let next_card = state.round.deck.pop().unwrap();
             state.round.cards_on_table.push(next_card);
+            reset_players(state);
             next_turn(state, None);
             state.round.raises.clear();
         }

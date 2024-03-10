@@ -152,97 +152,34 @@ fn validate_player(player_id: &str, state: &state::State) -> Result<state::Playe
 
     match state.players.get(&player_id) {
         Some(player) => Ok(player.clone()),
-        None => {
-            info!("Player {} failed: player not found", player_id);
-            Err(StatusCode::NOT_FOUND)
-        }
+        None => Err(StatusCode::NOT_FOUND),
     }
 }
 
 pub mod docs {
     use aide::transform::TransformOperation;
 
-    // use crate::cards;
-
     pub fn room(op: TransformOperation) -> TransformOperation {
         op.description("Get the current state of the game room.")
-        // .response_with::<200, Json<models::GameClientRoom>, _>(|res| {
-        //     res.description("The current state of the game room.")
-        //         .example(models::GameClientRoom {
-        //             state: models::GamePhase::Playing,
-        //             players: vec![models::GameClientPlayer {
-        //                 name: "Player Name".to_string(),
-        //                 balance: 1000,
-        //             }],
-        //             pot: 2000,
-        //             cards: vec![
-        //                 (cards::CardSuite::Hearts, cards::CardValue::Ace),
-        //                 (cards::CardSuite::Hearts, cards::CardValue::Two),
-        //                 (cards::CardSuite::Hearts, cards::CardValue::Three),
-        //             ],
-        //             last_update: 0,
-        //         })
-        // })
     }
 
     pub fn player(op: TransformOperation) -> TransformOperation {
         op.description("Get the current state of a player.")
-        // .response_with::<200, Json<models::GamePlayerState>, _>(|res| {
-        //     res.description("The current state of a player.")
-        //         .example(models::GamePlayerState {
-        //             state: models::GamePhase::Playing,
-        //             balance: 1000,
-        //             cards: (
-        //                 (cards::CardSuite::Hearts, cards::CardValue::Ace),
-        //                 (cards::CardSuite::Hearts, cards::CardValue::Two),
-        //             ),
-        //             your_turn: true,
-        //             last_update: 0,
-        //         })
-        // })
     }
 
     pub fn play(op: TransformOperation) -> TransformOperation {
         op.description("Play a round.")
-        // .request_body_with::<Json<models::PlayRequest>, _>(|req| {
-        //     req.description("The player's stake.")
-        //         .example(models::PlayRequest {
-        //             player_id: "player-id".to_string(),
-        //             stake: 100,
-        //         })
-        // })
-        // .response_with::<200, Json<()>, _>(|res| {
-        //     res.description("The player has played a round.")
-        // })
     }
 
     pub fn join(op: TransformOperation) -> TransformOperation {
         op.description("Join the game room.")
-        // .request_body_with::<Json<models::JoinRequest>, _>(|req| {
-        //     req.description("The player's name.")
-        //         .example(models::JoinRequest {
-        //             name: "Player Name".to_string(),
-        //         })
-        // })
-        // .response_with::<200, Json<models::JoinResponse>, _>(|res| {
-        //     res.description("The player has joined the game room.")
-        //         .example(models::JoinResponse {
-        //             id: "player-id".to_string(),
-        //         })
-        // })
     }
 
     pub fn close_room(op: TransformOperation) -> TransformOperation {
         op.description("Close the game room for new players to join and start the game.")
-        // .response_with::<200, Json<()>, _>(|res| {
-        //     res.description("The game room is closed for new players.")
-        // })
     }
 
     pub fn reset_room(op: TransformOperation) -> TransformOperation {
         op.description("Reset the game room.")
-        // .response_with::<200, Json<()>, _>(|res| {
-        //     res.description("The game room has been reset.")
-        // })
     }
 }
