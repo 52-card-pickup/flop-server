@@ -48,7 +48,7 @@ pub(crate) fn start_game(state: &mut state::State) -> Result<(), String> {
 
     state.round.cards_on_table.clear();
     state.round.pot = 0;
-    state.round.players_turn = state.players.keys().next().cloned();
+    next_turn(state, None);
     if state.status == state::GameStatus::Complete {
         state.round.deck = cards::Deck::default();
     }
@@ -106,13 +106,30 @@ pub(crate) fn accept_player_stake(
     player.balance = new_balance;
     player.stake += stake;
     state.round.pot += stake;
-    state.round.players_turn = get_next_players_turn(&state.players, &player_id);
+    next_turn(state, Some(player_id));
 
     if state.round.players_turn.is_none() {
         complete_round(state);
     }
 
     Ok(())
+}
+
+fn next_turn(state: &mut state::State, current_player_id: Option<&state::PlayerId>) {
+    let next_player_id = if let Some(player_id) = current_player_id {
+        get_next_players_turn(&state.players, player_id)
+    } else {
+        state.players.keys().next().cloned()
+    };
+    if let Some(next_player) = next_player_id
+        .as_ref()
+        .and_then(|id| state.players.get_mut(id))
+    {
+        let mut expires = state::dt::Instant::default();
+        expires.add_seconds(state::PLAYER_TURN_TIMEOUT_SECONDS);
+        next_player.ttl = Some(expires);
+    }
+    state.round.players_turn = next_player_id;
 }
 
 fn validate_player_stake(
@@ -152,13 +169,13 @@ fn complete_round(state: &mut state::State) {
                 let next_card = state.round.deck.pop().unwrap();
                 state.round.cards_on_table.push(next_card);
             }
-            state.round.players_turn = state.players.keys().next().cloned();
+            next_turn(state, None);
             state.round.raises.clear();
         }
         3 | 4 => {
             let next_card = state.round.deck.pop().unwrap();
             state.round.cards_on_table.push(next_card);
-            state.round.players_turn = state.players.keys().next().cloned();
+            next_turn(state, None);
             state.round.raises.clear();
         }
         5 => {
@@ -258,7 +275,7 @@ pub(crate) fn fold_player(
         .ok_or("Player not found".to_string())?;
 
     player.folded = true;
-    state.round.players_turn = get_next_players_turn(&state.players, &player_id);
+    next_turn(state, Some(player_id));
 
     if state.round.players_turn.is_none() {
         complete_round(state);
