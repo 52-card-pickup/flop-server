@@ -301,6 +301,45 @@ pub(crate) fn game_phase(state: &state::State) -> models::GamePhase {
     }
 }
 
+pub(crate) fn completed_game(state: &state::State) -> Option<models::CompletedGame> {
+    if state.status != state::GameStatus::Complete {
+        return None;
+    }
+    let (winner, winning_hand) = state
+        .players
+        .values()
+        .map(|p| {
+            (
+                p,
+                cards::Card::evaluate_hand(&p.cards, &state.round.cards_on_table),
+            )
+        })
+        .max_by_key(|(_, score)| *score)?;
+
+    let winner_idx = state
+        .players
+        .keys()
+        .position(|id| id == &winner.id)
+        .unwrap();
+
+    let player_cards = state
+        .players
+        .values()
+        .map(|p| {
+            (
+                (p.cards.0.suite.clone(), p.cards.0.value.clone()),
+                (p.cards.1.suite.clone(), p.cards.1.value.clone()),
+            )
+        })
+        .collect();
+
+    Some(models::CompletedGame {
+        winner_idx,
+        winning_hand: winning_hand.0.to_string(),
+        player_cards,
+    })
+}
+
 pub(crate) fn room_players(state: &state::State) -> Vec<models::GameClientPlayer> {
     let players = state
         .players

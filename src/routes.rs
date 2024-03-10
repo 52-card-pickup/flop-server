@@ -35,6 +35,7 @@ pub(crate) async fn room(State(state): State<SharedState>) -> Json<models::GameC
         players: game::room_players(&state),
         pot: state.round.pot,
         cards: game::cards_on_table(&state),
+        completed: game::completed_game(&state),
         last_update: state.last_update.into(),
     };
 

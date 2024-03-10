@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt::Display,
+};
 
 use rand::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -69,6 +72,24 @@ pub enum HandStrength {
     FourOfAKind,
     StraightFlush,
     RoyalFlush,
+}
+
+impl Display for HandStrength {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            HandStrength::HighCard => "High Card",
+            HandStrength::OnePair => "  Pair",
+            HandStrength::TwoPair => "Two Pair",
+            HandStrength::ThreeOfAKind => "Three of a Kind",
+            HandStrength::Straight => "Straight",
+            HandStrength::Flush => "Flush",
+            HandStrength::FullHouse => "Full House",
+            HandStrength::FourOfAKind => "Four of a Kind",
+            HandStrength::StraightFlush => "Straight Flush",
+            HandStrength::RoyalFlush => "Royal Flush",
+        };
+        write!(f, "{}", s)
+    }
 }
 
 impl Card {
