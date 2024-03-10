@@ -2,6 +2,7 @@ use std::sync::{Arc, RwLock};
 
 use aide::{axum::ApiRouter, openapi::OpenApi, transform::TransformOpenApi};
 use axum::Extension;
+use tower_http::cors::CorsLayer;
 use tracing::info;
 
 mod cards;
@@ -32,7 +33,8 @@ async fn main() {
         .nest_api_service("/api/v1", routes::api_routes(state.clone()))
         .nest_api_service("/docs", doc_routes::docs_routes(state.clone()))
         .finish_api_with(&mut api, api_docs)
-        .layer(Extension(Arc::new(api)));
+        .layer(Extension(Arc::new(api)))
+        .layer(CorsLayer::permissive());
 
     // run our app with hyper, listening globally on port 5000
     let listener = tokio::net::TcpListener::bind("0.0.0.0:5000").await.unwrap();
