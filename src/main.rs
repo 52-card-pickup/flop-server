@@ -65,14 +65,6 @@ mod utils {
 
     use crate::state::{Player, PlayerId};
 
-    pub fn now() -> u64 {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64
-    }
-
     pub fn get_next_players_turn(
         players: &BTreeMap<PlayerId, Player>,
         current_player_id: &PlayerId,
@@ -81,6 +73,7 @@ mod utils {
             .iter()
             .skip_while(|(id, _)| id != &current_player_id)
             .skip(1)
+            .filter(|(_, player)| !player.folded)
             .next()
             .map(|(id, _)| id.clone())
     }

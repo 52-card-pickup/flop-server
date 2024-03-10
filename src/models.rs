@@ -19,6 +19,16 @@ pub(crate) struct JoinResponse {
 pub(crate) struct PlayRequest {
     pub(crate) player_id: String,
     pub(crate) stake: u64,
+    pub(crate) action: PlayAction,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum PlayAction {
+    Check,
+    Call,
+    Raise,
+    Fold,
 }
 
 #[derive(Serialize, schemars::JsonSchema)]
