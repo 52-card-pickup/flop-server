@@ -1,7 +1,6 @@
 use crate::{
     game, models,
     state::{self, SharedState},
-    utils::now,
 };
 
 use aide::axum::{
@@ -34,9 +33,9 @@ pub(crate) async fn room(State(state): State<SharedState>) -> Json<models::GameC
     let game_client_state = models::GameClientRoom {
         state: game::game_phase(&state),
         players: game::room_players(&state),
-        pot: state.pot,
+        pot: state.round.pot,
         cards: game::cards_on_table(&state),
-        last_update: state.last_update,
+        last_update: state.last_update.into(),
     };
 
     Json(game_client_state)
@@ -53,8 +52,8 @@ pub(crate) async fn player(
         state: game::game_phase(&state),
         balance: player.balance,
         cards: game::cards_in_hand(&state, &player.id),
-        your_turn: state.players_turn == Some(player.id),
-        last_update: state.last_update,
+        your_turn: state.round.players_turn == Some(player.id),
+        last_update: state.last_update.into(),
     }))
 }
 
@@ -78,7 +77,7 @@ pub(crate) async fn play(
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    state.last_update = now();
+    state.last_update.set_now();
     info!("Player {} played round", payload.player_id);
     Ok(Json(()))
 }
@@ -105,7 +104,7 @@ pub(crate) async fn join(
         }
     };
 
-    state.last_update = now();
+    state.last_update.set_now();
     info!("Player {} joined", id);
     Ok(Json(models::JoinResponse { id: id.to_string() }))
 }
@@ -123,7 +122,7 @@ pub(crate) async fn close_room(State(state): State<SharedState>) -> JsonResult<(
         StatusCode::BAD_REQUEST
     })?;
 
-    state.last_update = now();
+    state.last_update.set_now();
     info!("Room closed for new players, game started");
     Ok(Json(()))
 }
@@ -133,7 +132,7 @@ pub(crate) async fn reset_room(State(state): State<SharedState>) -> Json<()> {
 
     *state = state::State::default();
 
-    state.last_update = now();
+    state.last_update.set_now();
     info!("Game reset");
     Json(())
 }
