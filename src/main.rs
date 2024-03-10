@@ -60,22 +60,3 @@ fn docs_url(listener: std::net::SocketAddr) -> String {
         addr => format!("http://{}/docs", addr),
     }
 }
-
-mod utils {
-    use std::collections::BTreeMap;
-
-    use crate::state::{Player, PlayerId};
-
-    pub fn get_next_players_turn(
-        players: &BTreeMap<PlayerId, Player>,
-        current_player_id: &PlayerId,
-    ) -> Option<PlayerId> {
-        players
-            .iter()
-            .skip_while(|(id, _)| id != &current_player_id)
-            .skip(1)
-            .filter(|(_, player)| !player.folded)
-            .next()
-            .map(|(id, _)| id.clone())
-    }
-}

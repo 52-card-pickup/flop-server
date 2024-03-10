@@ -59,6 +59,7 @@ pub(crate) struct GameClientRoom {
 pub(crate) struct GameClientPlayer {
     pub(crate) name: String,
     pub(crate) balance: u64,
+    pub(crate) turn_expires_dt: Option<u64>,
 }
 
 #[derive(Serialize, schemars::JsonSchema)]

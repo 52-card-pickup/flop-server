@@ -1,4 +1,4 @@
-use crate::{cards, models, state, utils::get_next_players_turn};
+use crate::{cards, models, state};
 
 use tracing::info;
 
@@ -117,7 +117,7 @@ pub(crate) fn accept_player_stake(
 
 fn next_turn(state: &mut state::State, current_player_id: Option<&state::PlayerId>) {
     let next_player_id = if let Some(player_id) = current_player_id {
-        get_next_players_turn(&state.players, player_id)
+        get_next_players_turn(&state, player_id)
     } else {
         state.players.keys().next().cloned()
     };
@@ -130,6 +130,37 @@ fn next_turn(state: &mut state::State, current_player_id: Option<&state::PlayerI
         next_player.ttl = Some(expires);
     }
     state.round.players_turn = next_player_id;
+}
+
+fn get_next_players_turn(
+    state: &state::State,
+    current_player_id: &state::PlayerId,
+) -> Option<state::PlayerId> {
+    let next_player = state
+        .players
+        .iter()
+        .skip_while(|(id, _)| id != &current_player_id)
+        .skip(1)
+        .filter(|(_, player)| !player.folded)
+        .next()
+        .map(|(id, _)| id.clone());
+
+    let target_stake = state
+        .round
+        .raises
+        .last()
+        .map(|(_, stake)| *stake)
+        .unwrap_or(0);
+
+    next_player.or_else(|| {
+        state
+            .players
+            .iter()
+            .skip_while(|(_, player)| !player.folded)
+            .next()
+            .filter(|(_, player)| player.stake < target_stake)
+            .map(|(id, _)| id.clone())
+    })
 }
 
 fn validate_player_stake(
@@ -257,6 +288,7 @@ pub(crate) fn room_players(state: &state::State) -> Vec<models::GameClientPlayer
         .map(|(_, p)| models::GameClientPlayer {
             name: p.name.clone(),
             balance: p.balance,
+            turn_expires_dt: p.ttl.map(|dt| dt.into()),
         })
         .collect();
     players
