@@ -26,6 +26,7 @@ pub struct Player {
     pub id: PlayerId,
     pub balance: u64,
     pub stake: u64,
+    pub folded: bool,
     pub cards: (Card, Card),
 }
 

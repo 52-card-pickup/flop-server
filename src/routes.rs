@@ -62,18 +62,15 @@ pub(crate) async fn play(
     State(state): State<SharedState>,
     Json(payload): Json<models::PlayRequest>,
 ) -> JsonResult<()> {
-    if payload.stake <= 0 {
-        info!(
-            "Player {} tried to play, but failed: stake is {}",
-            payload.player_id, payload.stake
-        );
-        return Err(StatusCode::BAD_REQUEST);
-    }
-
     let mut state = state.write().unwrap();
     let player = validate_player(&payload.player_id, &state)?;
 
-    if let Err(err) = game::accept_player_stake(&mut state, &player.id, payload.stake) {
+    let result = match payload.action {
+        models::PlayAction::Fold => game::fold_player(&mut state, &player.id),
+        _ => game::accept_player_stake(&mut state, &player.id, payload.stake, payload.action),
+    };
+
+    if let Err(err) = result {
         info!(
             "Player {} tried to play, but failed: {}",
             payload.player_id, err

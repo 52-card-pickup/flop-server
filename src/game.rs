@@ -35,6 +35,7 @@ pub(crate) fn add_new_player(
         id: player_id.clone(),
         balance: 1000,
         stake: 0,
+        folded: false,
         cards: (state.deck.pop().unwrap(), state.deck.pop().unwrap()),
     };
     state.players.insert(player_id.clone(), player);
@@ -45,6 +46,56 @@ pub(crate) fn accept_player_stake(
     state: &mut state::State,
     player_id: &state::PlayerId,
     stake: u64,
+    action: models::PlayAction,
+) -> Result<(), String> {
+    if state.players_turn.as_ref() != Some(player_id) {
+        return Err("Not your turn".to_string());
+    }
+
+    let stake = match action {
+        models::PlayAction::Check => {
+            // TODO: use the current stake to validate the check action
+            0
+        }
+        models::PlayAction::Call => {
+            // TODO: use the current stake to calculate the call amount
+            stake
+        }
+        models::PlayAction::Raise if stake == 0 => {
+            return Err("Stake cannot be 0 for raise".to_string())
+        }
+        models::PlayAction::Raise => {
+            // TODO: use the current stake to validate the raise amount
+            stake
+        }
+        models::PlayAction::Fold => unreachable!("Cannot handle fold action here"),
+    };
+
+    let player = state
+        .players
+        .get_mut(&player_id)
+        .ok_or("Player not found".to_string())?;
+
+    let new_balance = player
+        .balance
+        .checked_sub(stake)
+        .ok_or("Not enough balance".to_string())?;
+
+    player.balance = new_balance;
+    player.stake += stake;
+    state.pot += stake;
+    state.players_turn = get_next_players_turn(&state.players, &player_id);
+
+    if state.players_turn.is_none() {
+        complete_round(state);
+    }
+
+    Ok(())
+}
+
+pub(crate) fn fold_player(
+    state: &mut state::State,
+    player_id: &state::PlayerId,
 ) -> Result<(), String> {
     if state.players_turn.as_ref() != Some(player_id) {
         return Err("Not your turn".to_string());
@@ -54,9 +105,7 @@ pub(crate) fn accept_player_stake(
         .get_mut(&player_id)
         .ok_or("Player not found".to_string())?;
 
-    player.stake += stake;
-    player.balance -= stake;
-    state.pot += stake;
+    player.folded = true;
     state.players_turn = get_next_players_turn(&state.players, &player_id);
 
     if state.players_turn.is_none() {

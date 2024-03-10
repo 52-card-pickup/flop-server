@@ -79,6 +79,7 @@ mod utils {
             .iter()
             .skip_while(|(id, _)| id != &current_player_id)
             .skip(1)
+            .filter(|(_, player)| !player.folded)
             .next()
             .map(|(id, _)| id.clone())
     }
