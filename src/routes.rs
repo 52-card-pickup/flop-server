@@ -52,7 +52,10 @@ pub(crate) async fn player(
         state: game::game_phase(&state),
         balance: player.balance,
         cards: game::cards_in_hand(&state, &player.id),
-        your_turn: state.round.players_turn == Some(player.id),
+        your_turn: state.round.players_turn.as_ref() == Some(&player.id),
+        call_amount: game::call_amount(&state).unwrap_or(0),
+        min_raise_by: game::min_raise_by(&state),
+        turn_expires_dt: game::turn_expires_dt(&state, &player.id),
         last_update: state.last_update.into(),
     }))
 }
@@ -63,6 +66,10 @@ pub(crate) async fn play(
 ) -> JsonResult<()> {
     let mut state = state.write().unwrap();
     let player = validate_player(&payload.player_id, &state)?;
+    if let Err(err) = game::reset_ttl(&mut state, &player.id) {
+        info!("Player {} failed to play: {}", payload.player_id, err);
+        return Err(StatusCode::BAD_REQUEST);
+    }
 
     let result = match payload.action {
         models::PlayAction::Fold => game::fold_player(&mut state, &player.id),
@@ -226,7 +233,7 @@ pub mod docs {
     }
 
     pub fn close_room(op: TransformOperation) -> TransformOperation {
-        op.description("Close the game room for new players.")
+        op.description("Close the game room for new players to join and start the game.")
         // .response_with::<200, Json<()>, _>(|res| {
         //     res.description("The game room is closed for new players.")
         // })

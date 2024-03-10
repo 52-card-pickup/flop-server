@@ -9,6 +9,10 @@ pub use id::PlayerId;
 
 pub type SharedState = Arc<RwLock<State>>;
 
+pub const STARTING_BALANCE: u64 = 1000;
+pub const SMALL_BLIND: u64 = 10;
+pub const BIG_BLIND: u64 = 20;
+
 #[derive(Default)]
 pub struct State {
     pub players: BTreeMap<PlayerId, Player>,
@@ -34,6 +38,7 @@ pub struct Player {
     pub balance: u64,
     pub stake: u64,
     pub folded: bool,
+    pub ttl: Option<dt::Instant>,
     pub cards: (Card, Card),
 }
 
@@ -73,15 +78,19 @@ mod id {
     }
 }
 
-mod dt {
+pub mod dt {
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    #[derive(Clone, Copy, PartialEq, Eq)]
+    #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
     pub struct Instant(u64);
 
     impl Instant {
         pub fn set_now(&mut self) {
             self.0 = Self::now_ms();
+        }
+
+        pub fn add_seconds(&mut self, seconds: u64) {
+            self.0 += seconds * 1000;
         }
 
         fn now_ms() -> u64 {

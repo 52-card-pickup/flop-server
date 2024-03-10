@@ -38,6 +38,9 @@ pub(crate) struct GamePlayerState {
     pub(crate) balance: u64,
     pub(crate) cards: ((CardSuite, CardValue), (CardSuite, CardValue)),
     pub(crate) your_turn: bool,
+    pub(crate) call_amount: u64,
+    pub(crate) min_raise_by: u64,
+    pub(crate) turn_expires_dt: Option<u64>,
     pub(crate) last_update: u64,
 }
 

@@ -27,6 +27,7 @@ async fn main() {
     // initialize state
     let state = state::State::default();
     let state: state::SharedState = Arc::new(RwLock::new(state));
+    game::spawn_game_worker(state.clone());
 
     // build our application with a route
     let app = ApiRouter::new()

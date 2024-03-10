@@ -2,6 +2,42 @@ use crate::{cards, models, state, utils::get_next_players_turn};
 
 use tracing::info;
 
+pub(crate) fn spawn_game_worker(state: state::SharedState) {
+    fn run_tasks(state: &state::SharedState) {
+        let now = state::dt::Instant::default();
+
+        let current_player = {
+            let state = state.read().unwrap();
+            if state.status != state::GameStatus::Playing {
+                return;
+            }
+            let players_turn = state.round.players_turn.clone();
+            players_turn.and_then(|id| state.players.get(&id)).cloned()
+        };
+
+        if let Some(player) = current_player {
+            let expired = player.ttl.map(|ttl| ttl < now).unwrap_or(false);
+            if expired {
+                info!("Player {} turn expired", player.id);
+                let mut state = state.write().unwrap();
+
+                fold_player(&mut state, &player.id).unwrap();
+
+                // TODO: notify player, soft kick
+                state.players.remove(&player.id);
+                state.last_update.set_now();
+            }
+        }
+    }
+
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+            run_tasks(&state);
+        }
+    });
+}
+
 pub(crate) fn start_game(state: &mut state::State) -> Result<(), String> {
     if state.status == state::GameStatus::Playing {
         return Err("Game already started".to_string());
@@ -35,9 +71,10 @@ pub(crate) fn add_new_player(
     let player = state::Player {
         name: player_name.to_owned(),
         id: player_id.clone(),
-        balance: 1000,
+        balance: state::STARTING_BALANCE,
         stake: 0,
         folded: false,
+        ttl: None,
         cards: (card_1, card_2),
     };
     state.players.insert(player_id.clone(), player);
@@ -93,19 +130,11 @@ fn validate_player_stake(
         }
         models::PlayAction::Fold => unreachable!("Cannot handle fold action here"),
         models::PlayAction::Check => 0,
-        models::PlayAction::Call => state
-            .round
-            .raises
-            .last()
-            .map(|(_, last_stake)| *last_stake)
-            .ok_or("No raises to call".to_string())?,
+        models::PlayAction::Call => call_amount(state).ok_or("No bets to call".to_string())?,
         models::PlayAction::Raise => {
-            let raises: Vec<_> = [0_u64]
-                .into_iter()
-                .chain(state.round.raises.iter().map(|(_, s)| *s))
-                .collect();
-
-            let min_raise = raises.windows(2).map(|w| w[1] - w[0]).last().unwrap_or(0);
+            let call_amount = call_amount(state).unwrap_or(0);
+            let min_raise_by = min_raise_by(state);
+            let min_raise = call_amount + min_raise_by;
             if stake < min_raise {
                 return Err(format!("Raise must be at least {}", min_raise));
             }
@@ -236,4 +265,44 @@ pub(crate) fn fold_player(
     }
 
     Ok(())
+}
+
+pub(crate) fn reset_ttl(state: &mut state::State, id: &state::PlayerId) -> Result<(), String> {
+    let now = state::dt::Instant::default();
+    match state.players.get_mut(id) {
+        Some(player) => match player.ttl {
+            Some(ttl) if ttl < now => Err("Player's turn has expired".to_string()),
+            _ => {
+                player.ttl = None;
+                Ok(())
+            }
+        },
+        None => Err("Player not found".to_string()),
+    }
+}
+
+pub(crate) fn call_amount(state: &state::State) -> Option<u64> {
+    state.round.raises.last().map(|(_, last_stake)| *last_stake)
+}
+
+pub(crate) fn min_raise_by(state: &state::State) -> u64 {
+    let raises: Vec<_> = [0_u64]
+        .into_iter()
+        .chain(state.round.raises.iter().map(|(_, s)| *s))
+        .collect();
+
+    let min_raise = raises
+        .windows(2)
+        .map(|w| w[1] - w[0])
+        .last()
+        .unwrap_or(state::BIG_BLIND);
+
+    min_raise
+}
+
+pub(crate) fn turn_expires_dt(state: &state::State, player_id: &state::PlayerId) -> Option<u64> {
+    state
+        .players
+        .get(player_id)
+        .and_then(|p| p.ttl.map(|dt| dt.into()))
 }
