@@ -251,19 +251,26 @@ fn complete_game(state: &mut state::State) {
 
     for (player, score) in &scores {
         info!(
-            "Player {} has score {} (rank {:?})",
-            player.id, score.1, score.0
+            "Player {} has score {} (cards {:?})",
+            player.id,
+            score.strength(),
+            score.cards()
         );
     }
 
-    let winning_hand = scores.iter_mut().max_by_key(|(_, score)| *score).unwrap();
+    let winning_hand = scores
+        .iter_mut()
+        .max_by_key(|(_, score)| score.clone())
+        .unwrap();
     let (winner, score) = winning_hand;
     winner.balance += round.pot;
     round.pot = 0;
     state.round.players_turn = None;
     info!(
         "Game complete, winner: {}, score: {} (rank {:?})",
-        winner.id, score.1, score.0
+        winner.id,
+        score.strength(),
+        score.cards()
     );
 }
 
@@ -314,7 +321,7 @@ pub(crate) fn completed_game(state: &state::State) -> Option<models::CompletedGa
                 cards::Card::evaluate_hand(&p.cards, &state.round.cards_on_table),
             )
         })
-        .max_by_key(|(_, score)| *score)?;
+        .max_by_key(|(_, score)| score.clone())?;
 
     let winner_idx = state
         .players
@@ -335,7 +342,7 @@ pub(crate) fn completed_game(state: &state::State) -> Option<models::CompletedGa
 
     Some(models::CompletedGame {
         winner_idx,
-        winning_hand: winning_hand.0.to_string(),
+        winning_hand: winning_hand.strength().to_string(),
         player_cards,
     })
 }
