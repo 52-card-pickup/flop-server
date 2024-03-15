@@ -112,6 +112,19 @@ impl Card {
             cards
         };
 
+        let mut with_high_low_ace: Vec<_> = deduped_values
+            .iter()
+            .map(|c| (c.value as u64 + 2, c.value))
+            .chain(
+                // handle the case where Ace is low
+                deduped_values
+                    .iter()
+                    .filter(|c| c.value == CardValue::Ace)
+                    .map(|c| (1, c.value)),
+            )
+            .collect();
+        with_high_low_ace.sort_by_key(|(v, _)| 14 - v);
+
         // check for royal flush
         // example: [Ace, King, Queen, Jack, Ten] of the same suite
         for (_, cards) in by_suite.iter().filter(|(_, cards)| cards.len() >= 5) {
@@ -179,13 +192,14 @@ impl Card {
         }
 
         // check for straight
-        // example: [8, 7, 6, 5, 4]
-        // TODO: check for wheel straight
-        for w in deduped_values.windows(5) {
-            if (w[0].value as u64) - (w[4].value as u64) == 4 {
+        // example: [8, 7, 6, 5, 4] (or [5, 4, 3, 2, Ace] for the wheel straight)
+        for w in with_high_low_ace.windows(5) {
+            let card1_value = w[0].0;
+            let card5_value = w[4].0;
+            if (card1_value - card5_value) == 4 {
                 return EvaluatedHand(
                     HandStrength::Straight,
-                    [w[0].value, w[1].value, w[2].value, w[3].value, w[4].value],
+                    [w[0].1, w[1].1, w[2].1, w[3].1, w[4].1],
                 );
             }
         }
@@ -371,6 +385,13 @@ mod tests {
     #[test]
     fn cards_evaluate_hand_straight() {
         let (player_cards, table_cards) = cards_1p("8h 7d", "6h 5h 4c Kc Jd");
+        let EvaluatedHand(score, _) = Card::evaluate_hand(&player_cards, &table_cards);
+        assert_eq!(score, HandStrength::Straight);
+    }
+
+    #[test]
+    fn cards_evaluate_hand_straight_wheel() {
+        let (player_cards, table_cards) = cards_1p("5h 4d", "3h 2h Ac Kc Jd");
         let EvaluatedHand(score, _) = Card::evaluate_hand(&player_cards, &table_cards);
         assert_eq!(score, HandStrength::Straight);
     }
