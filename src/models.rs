@@ -42,6 +42,7 @@ pub(crate) struct GamePlayerState {
     pub(crate) min_raise_by: u64,
     pub(crate) turn_expires_dt: Option<u64>,
     pub(crate) last_update: u64,
+    pub(crate) current_round_stake: u64,
 }
 
 #[derive(Serialize, schemars::JsonSchema)]
