@@ -62,8 +62,11 @@ pub(crate) fn add_new_player(
     state: &mut state::State,
     player_name: &str,
 ) -> Result<state::PlayerId, String> {
-    if state.status != state::GameStatus::Joining {
+    if state.status == state::GameStatus::Playing {
         return Err("Game already started".to_string());
+    }
+    if state.players.len() >= state::MAX_PLAYERS {
+        return Err("Room is full".to_string());
     }
     let player_id = state::PlayerId::default();
     let card_1 = state.round.deck.pop().unwrap();
@@ -115,6 +118,37 @@ pub(crate) fn accept_player_stake(
     Ok(())
 }
 
+fn accept_blinds(
+    state: &mut state::State,
+    small_blind_player: state::PlayerId,
+    big_blind_player: state::PlayerId,
+) {
+    let small_blind_player = state
+        .players
+        .get_mut(&small_blind_player)
+        .expect("Small blind player not found");
+    let small_blind_stake = small_blind_player.balance.min(state::SMALL_BLIND);
+    small_blind_player.balance = small_blind_player.balance - small_blind_stake;
+    small_blind_player.stake += small_blind_stake;
+    state.round.pot += small_blind_stake;
+
+    let big_blind_player = state
+        .players
+        .get_mut(&big_blind_player)
+        .expect("Big blind player not found");
+
+    let big_blind_stake = big_blind_player.balance.min(state::BIG_BLIND);
+
+    big_blind_player.balance = big_blind_player.balance - big_blind_stake;
+    big_blind_player.stake += big_blind_stake;
+    state.round.pot += big_blind_stake;
+
+    state
+        .round
+        .raises
+        .push((big_blind_player.id.clone(), big_blind_stake));
+}
+
 fn reset_players(state: &mut state::State) {
     for player in state.players.values_mut() {
         player.stake = 0;
@@ -127,7 +161,23 @@ fn next_turn(state: &mut state::State, current_player_id: Option<&state::PlayerI
         get_next_players_turn(&state, player_id)
     } else {
         reset_players(state);
-        state.players.keys().next().cloned()
+        if state.players.len() < 2 {
+            info!("Not enough players, pausing game");
+            state.round.players_turn = None;
+            return;
+        }
+
+        let mut player_ids = state.players.keys().cloned().cycle();
+        let small_blind_player = player_ids.next().unwrap();
+        let big_blind_player = player_ids.next().unwrap();
+        let next_player_id = player_ids.next();
+
+        info!(
+            "Accepting blinds from players {} (sm) and {} (lg)",
+            small_blind_player, big_blind_player
+        );
+        accept_blinds(state, small_blind_player, big_blind_player);
+        next_player_id
     };
     if let Some(next_player) = next_player_id
         .as_ref()
@@ -136,6 +186,8 @@ fn next_turn(state: &mut state::State, current_player_id: Option<&state::PlayerI
         let mut expires = state::dt::Instant::default();
         expires.add_seconds(state::PLAYER_TURN_TIMEOUT_SECONDS);
         next_player.ttl = Some(expires);
+    } else {
+        info!("Round complete, awaiting next round");
     }
     state.round.players_turn = next_player_id;
 }
