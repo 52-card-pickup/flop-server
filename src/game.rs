@@ -163,6 +163,12 @@ fn reset_players(state: &mut state::State) {
 }
 
 fn next_turn(state: &mut state::State, current_player_id: Option<&state::PlayerId>) {
+    if state.players.values().filter(|p| !p.folded).count() == 1 {
+        info!("All players but one have folded, completing round");
+        state.round.players_turn = None;
+        return;
+    }
+
     let next_player_id = match current_player_id {
         Some(player_id) => get_next_players_turn(&state, player_id),
         None if state.players.len() < 2 => {
@@ -278,6 +284,15 @@ fn validate_player_stake(
 }
 
 fn complete_round(state: &mut state::State) {
+    let all_players_except_one_folded = state.players.values().filter(|p| !p.folded).count() == 1;
+    if all_players_except_one_folded {
+        complete_game(state);
+        reset_players(state);
+        rotate_dealer(state);
+        state.round.raises.clear();
+        return;
+    }
+
     match state.round.cards_on_table.len() {
         0 => {
             place_cards_on_table(state, 3);
@@ -367,12 +382,17 @@ fn complete_game(state: &mut state::State) {
         }
     }
 
+    let all_but_one_folded = state.players.values().filter(|p| !p.folded).count() == 1;
+
     let mut scores: Vec<_> = state
         .players
         .values_mut()
         .map(|p| {
+            if (p.folded || all_but_one_folded) {
+                return (p, None);
+            }
             let score = cards::Card::evaluate_hand(&p.cards, &round.cards_on_table);
-            (p, score)
+            (p, Some(score))
         })
         .collect();
 
@@ -380,8 +400,11 @@ fn complete_game(state: &mut state::State) {
         info!(
             "Player {} has score {} (cards {:?})",
             player.id,
-            score.strength(),
-            score.cards()
+            score
+                .as_ref()
+                .map(|s| s.strength().to_string())
+                .unwrap_or("folded".to_string()),
+            score.as_ref().map(|s| s.cards())
         );
     }
 
@@ -422,8 +445,8 @@ fn complete_game(state: &mut state::State) {
         "Game complete, pot: {} ({} splits) (rank {:?}) cards: {:?}",
         round.pot,
         pots.len() - 1,
-        best_hand.strength(),
-        best_hand.cards()
+        best_hand.as_ref().map(|s| s.strength()),
+        best_hand.as_ref().map(|s| s.cards())
     );
 
     round.pot = 0;
@@ -581,6 +604,7 @@ pub(crate) fn turn_expires_dt(state: &state::State, player_id: &state::PlayerId)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::SMALL_BLIND;
 
     #[test]
     fn game_pays_outright_winner_from_pot() {
@@ -648,5 +672,70 @@ mod tests {
             expected_balance
         );
         assert_eq!(winner.balance, expected_balance);
+    }
+
+    #[test]
+    fn game_pays_out_to_winner_after_others_fold() {
+        use models::PlayAction as P;
+        use state::BIG_BLIND;
+
+        let mut state = state::State::default();
+        let state = &mut state;
+        state.round.deck = cards::Deck::ordered();
+
+        let player_1 = add_new_player(state, "player_1").unwrap();
+        let player_2 = add_new_player(state, "player_2").unwrap();
+
+        assert_eq!(state.players.len(), 2);
+        assert_eq!(state.status, state::GameStatus::Joining);
+        let starting_balance = state.players.iter().map(|(_, p)| p.balance).next().unwrap();
+        assert_eq!(starting_balance, state::STARTING_BALANCE);
+
+        start_game(state).unwrap();
+
+        assert_eq!(cards_on_table(state).len(), 0);
+
+        accept_player_stake(state, &player_1, SMALL_BLIND, P::Call).expect("R1-P1");
+        accept_player_stake(state, &player_2, 0, P::Call).expect("R1-P2");
+
+        assert_eq!(cards_on_table(state).len(), 3);
+
+        fold_player(state, &player_1).expect("R2-P1");
+        info!(
+            "Player 2 stakes: {}",
+            state.players.get(&player_2).unwrap().stake
+        );
+        assert_eq!(state.status, state::GameStatus::Complete);
+        assert_eq!(state.round.pot, 0);
+
+        let winner = state.players.get(&player_2).unwrap();
+        assert_eq!(winner.balance, state::STARTING_BALANCE + BIG_BLIND);
+    }
+
+    #[test]
+    fn two_player_game_fold_on_small_blind() {
+        let mut state = state::State::default();
+        let state = &mut state;
+        state.round.deck = cards::Deck::ordered();
+
+        let player_1 = add_new_player(state, "player_1").unwrap();
+        let player_2 = add_new_player(state, "player_2").unwrap();
+
+        assert_eq!(state.players.len(), 2);
+        assert_eq!(state.status, state::GameStatus::Joining);
+        let starting_balance = state.players.iter().map(|(_, p)| p.balance).next().unwrap();
+        assert_eq!(starting_balance, state::STARTING_BALANCE);
+
+        start_game(state).unwrap();
+
+        assert_eq!(cards_on_table(state).len(), 0);
+        assert_eq!(state.round.pot, 30);
+
+        fold_player(state, &player_1).expect("R2-P1");
+        assert_eq!(state.status, state::GameStatus::Complete);
+        assert_eq!(state.round.pot, 0);
+
+        let winner = state.players.get(&player_2).unwrap();
+        assert_eq!(winner.balance, state::STARTING_BALANCE + SMALL_BLIND);
     }
 }
