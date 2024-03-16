@@ -342,7 +342,6 @@ fn complete_game(state: &mut state::State) {
     for stake in deduped_stakes.windows(2) {
         let (rel_stake, abs_stake) = (stake[1] - stake[0], stake[1]);
 
-        // TODO: stake values players that folded should still be included in the winnable pot
         let winnable_players: Vec<_> = stakes
             .iter()
             .filter(|s| s.stake >= abs_stake)
@@ -351,6 +350,21 @@ fn complete_game(state: &mut state::State) {
 
         let pot = winnable_players.len() as u64 * rel_stake;
         pots.push((pot, winnable_players));
+    }
+
+    // TODO: TEST! the stake values players that folded should still be included in the winnable pot
+    for (_, player) in state.players.iter().filter(|(_, p)| p.folded) {
+        let mut pot = pots
+            .iter_mut()
+            .skip_while(|(pot, players)| (*pot / players.len() as u64) < player.stake);
+
+        if let Some((pot, _)) = pot.next() {
+            println!(
+                "Player {} folded, adding {} stake to pot of {}",
+                player.id, player.stake, pot
+            );
+            *pot += player.stake;
+        }
     }
 
     let mut scores: Vec<_> = state
@@ -397,7 +411,7 @@ fn complete_game(state: &mut state::State) {
             .collect::<Vec<_>>();
 
         println!(
-            "Payed out pot to winners. Pot: {}, Winner(s): {}",
+            "Paid out pot to winners. Pot: {}, Winner(s): {}",
             pot,
             winners.join(", "),
         );
