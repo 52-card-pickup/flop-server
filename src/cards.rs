@@ -7,13 +7,7 @@ use serde::{Deserialize, Serialize};
 pub struct Deck(Vec<Card>);
 
 impl Deck {
-    pub fn pop(&mut self) -> Option<Card> {
-        self.0.pop()
-    }
-}
-
-impl Default for Deck {
-    fn default() -> Self {
+    pub fn ordered() -> Self {
         let suites = vec![
             CardSuite::Hearts,
             CardSuite::Diamonds,
@@ -21,7 +15,6 @@ impl Default for Deck {
             CardSuite::Spades,
         ];
         let values = vec![
-            CardValue::Ace,
             CardValue::Two,
             CardValue::Three,
             CardValue::Four,
@@ -34,6 +27,7 @@ impl Default for Deck {
             CardValue::Jack,
             CardValue::Queen,
             CardValue::King,
+            CardValue::Ace,
         ];
         let mut deck = Vec::new();
         for suite in suites {
@@ -44,9 +38,19 @@ impl Default for Deck {
                 });
             }
         }
+        Deck(deck)
+    }
+    pub fn pop(&mut self) -> Option<Card> {
+        self.0.pop()
+    }
+}
+
+impl Default for Deck {
+    fn default() -> Self {
+        let Deck(mut deck) = Self::ordered();
         let mut rng = rand::thread_rng();
         deck.shuffle(&mut rng);
-        Deck(deck)
+        Self(deck)
     }
 }
 
