@@ -2,19 +2,19 @@ use serde::{Deserialize, Serialize};
 
 use crate::cards::{CardSuite, CardValue};
 
-#[derive(Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct JoinRequest {
     pub(crate) name: String,
 }
 
-#[derive(Serialize, schemars::JsonSchema)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct JoinResponse {
     pub(crate) id: String,
 }
 
-#[derive(Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PlayRequest {
     pub(crate) player_id: String,
@@ -22,7 +22,7 @@ pub(crate) struct PlayRequest {
     pub(crate) action: PlayAction,
 }
 
-#[derive(Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum PlayAction {
     Check,
@@ -31,7 +31,7 @@ pub(crate) enum PlayAction {
     Fold,
 }
 
-#[derive(Serialize, schemars::JsonSchema)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct GamePlayerState {
     pub(crate) state: GamePhase,
@@ -45,7 +45,7 @@ pub(crate) struct GamePlayerState {
     pub(crate) current_round_stake: u64,
 }
 
-#[derive(Serialize, schemars::JsonSchema)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct GameClientRoom {
     pub(crate) state: GamePhase,
@@ -56,7 +56,7 @@ pub(crate) struct GameClientRoom {
     pub(crate) last_update: u64,
 }
 
-#[derive(Serialize, schemars::JsonSchema)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CompletedGame {
     pub(crate) winner_idx: usize,
@@ -64,7 +64,7 @@ pub(crate) struct CompletedGame {
     pub(crate) player_cards: Vec<((CardSuite, CardValue), (CardSuite, CardValue))>,
 }
 
-#[derive(Serialize, schemars::JsonSchema)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct GameClientPlayer {
     pub(crate) name: String,
@@ -72,7 +72,7 @@ pub(crate) struct GameClientPlayer {
     pub(crate) turn_expires_dt: Option<u64>,
 }
 
-#[derive(Serialize, schemars::JsonSchema)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[allow(dead_code)]
 pub(crate) enum GamePhase {
