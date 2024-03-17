@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::{
     game, models,
     state::{self, SharedState},
@@ -8,7 +10,7 @@ use aide::axum::{
     ApiRouter,
 };
 use axum::{
-    extract::{Path, State},
+    extract::{self, Path, State},
     http::StatusCode,
     Json,
 };
@@ -27,7 +29,12 @@ pub(crate) fn api_routes(state: state::SharedState) -> ApiRouter {
         .with_state(state)
 }
 
-pub(crate) async fn room(State(state): State<SharedState>) -> Json<models::GameClientRoom> {
+pub(crate) async fn room(
+    extract::State(state): State<SharedState>,
+    extract::Query(query): extract::Query<HashMap<String, String>>,
+) -> Json<models::GameClientRoom> {
+    utils::wait_for_update(&state, query).await;
+
     let state = state.read().unwrap();
 
     let game_client_state = models::GameClientRoom {
@@ -36,7 +43,7 @@ pub(crate) async fn room(State(state): State<SharedState>) -> Json<models::GameC
         pot: state.round.pot,
         cards: game::cards_on_table(&state),
         completed: game::completed_game(&state),
-        last_update: state.last_update.into(),
+        last_update: state.last_update.as_u64(),
     };
 
     Json(game_client_state)
@@ -45,11 +52,14 @@ pub(crate) async fn room(State(state): State<SharedState>) -> Json<models::GameC
 pub(crate) async fn player(
     State(state): State<SharedState>,
     Path(player_id): Path<String>,
+    extract::Query(query): extract::Query<HashMap<String, String>>,
 ) -> JsonResult<models::GamePlayerState> {
-    let state = state.read().unwrap();
-    let player = validate_player(&player_id, &state)?;
+    utils::wait_for_update(&state, query).await;
 
-    Ok(Json(models::GamePlayerState {
+    let state = state.read().unwrap();
+    let player = utils::validate_player(&player_id, &state)?;
+
+    let game_player_state = models::GamePlayerState {
         state: game::game_phase(&state),
         balance: player.balance,
         cards: game::cards_in_hand(&state, &player.id),
@@ -57,16 +67,18 @@ pub(crate) async fn player(
         call_amount: game::call_amount(&state).unwrap_or(0),
         min_raise_by: game::min_raise_by(&state),
         turn_expires_dt: game::turn_expires_dt(&state, &player.id),
-        last_update: state.last_update.into(),
-    }))
+        last_update: state.last_update.as_u64(),
+    };
+
+    Ok(Json(game_player_state))
 }
 
 pub(crate) async fn play(
-    State(state): State<SharedState>,
+    State(shared_state): State<SharedState>,
     Json(payload): Json<models::PlayRequest>,
 ) -> JsonResult<()> {
-    let mut state = state.write().unwrap();
-    let player = validate_player(&payload.player_id, &state)?;
+    let mut state = shared_state.write().unwrap();
+    let player = utils::validate_player(&payload.player_id, &state)?;
     if let Err(err) = game::reset_ttl(&mut state, &player.id) {
         info!("Player {} failed to play: {}", payload.player_id, err);
         return Err(StatusCode::BAD_REQUEST);
@@ -91,10 +103,10 @@ pub(crate) async fn play(
 }
 
 pub(crate) async fn join(
-    State(state): State<SharedState>,
+    State(shared_state): State<SharedState>,
     Json(payload): Json<models::JoinRequest>,
 ) -> JsonResult<models::JoinResponse> {
-    let mut state = state.write().unwrap();
+    let mut state = shared_state.write().unwrap();
 
     if payload.name.is_empty()
         || payload.name.len() > 20
@@ -113,12 +125,13 @@ pub(crate) async fn join(
     };
 
     state.last_update.set_now();
+
     info!("Player {} joined", id);
     Ok(Json(models::JoinResponse { id: id.to_string() }))
 }
 
-pub(crate) async fn close_room(State(state): State<SharedState>) -> JsonResult<()> {
-    let mut state = state.write().unwrap();
+pub(crate) async fn close_room(State(shared_state): State<SharedState>) -> JsonResult<()> {
+    let mut state = shared_state.write().unwrap();
 
     game::start_game(&mut state).map_err(|err| {
         info!("Failed to close room: {}", err);
@@ -126,29 +139,66 @@ pub(crate) async fn close_room(State(state): State<SharedState>) -> JsonResult<(
     })?;
 
     state.last_update.set_now();
+
     info!("Room closed for new players, game started");
     Ok(Json(()))
 }
 
-pub(crate) async fn reset_room(State(state): State<SharedState>) -> Json<()> {
-    let mut state = state.write().unwrap();
+pub(crate) async fn reset_room(State(shared_state): State<SharedState>) -> Json<()> {
+    let mut state = shared_state.write().unwrap();
 
     *state = state::State::default();
 
     state.last_update.set_now();
+
     info!("Game reset");
     Json(())
 }
 
-fn validate_player(player_id: &str, state: &state::State) -> Result<state::Player, StatusCode> {
-    let player_id = player_id.parse().map_err(|_| {
-        info!("Player {} failed: invalid player id", player_id);
-        StatusCode::BAD_REQUEST
-    })?;
+mod utils {
+    use std::collections::HashMap;
 
-    match state.players.get(&player_id) {
-        Some(player) => Ok(player.clone()),
-        None => Err(StatusCode::NOT_FOUND),
+    use axum::http::StatusCode;
+    use tracing::info;
+
+    use crate::state;
+
+    pub fn validate_player(
+        player_id: &str,
+        state: &state::State,
+    ) -> Result<state::Player, StatusCode> {
+        let player_id = player_id.parse().map_err(|_| {
+            info!("Player {} failed: invalid player id", player_id);
+            StatusCode::BAD_REQUEST
+        })?;
+
+        match state.players.get(&player_id) {
+            Some(player) => Ok(player.clone()),
+            None => Err(StatusCode::NOT_FOUND),
+        }
+    }
+
+    pub async fn wait_for_update(
+        state: &std::sync::Arc<std::sync::RwLock<state::State>>,
+        query: HashMap<String, String>,
+    ) {
+        if let Some(last_update) = query.get("since").and_then(|s| s.parse::<u64>().ok()) {
+            let rx = {
+                let state = state.read().unwrap();
+                state.last_update.wait_for(last_update.into())
+            };
+
+            let timeout_ms = query
+                .get("timeout")
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(5_000);
+            let timeout = std::time::Duration::from_millis(timeout_ms);
+
+            tokio::select! {
+                _ = rx => {}
+                _ = tokio::time::sleep(timeout) => {}
+            }
+        }
     }
 }
 
