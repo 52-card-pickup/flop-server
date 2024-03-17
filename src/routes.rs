@@ -75,10 +75,10 @@ pub(crate) async fn player(
 }
 
 pub(crate) async fn play(
-    State(shared_state): State<SharedState>,
+    State(state): State<SharedState>,
     Json(payload): Json<models::PlayRequest>,
 ) -> JsonResult<()> {
-    let mut state = shared_state.write().unwrap();
+    let mut state = state.write().unwrap();
     let player = utils::validate_player(&payload.player_id, &state)?;
     if let Err(err) = game::reset_ttl(&mut state, &player.id) {
         info!("Player {} failed to play: {}", payload.player_id, err);
@@ -104,10 +104,10 @@ pub(crate) async fn play(
 }
 
 pub(crate) async fn join(
-    State(shared_state): State<SharedState>,
+    State(state): State<SharedState>,
     Json(payload): Json<models::JoinRequest>,
 ) -> JsonResult<models::JoinResponse> {
-    let mut state = shared_state.write().unwrap();
+    let mut state = state.write().unwrap();
 
     if payload.name.is_empty()
         || payload.name.len() > 20
@@ -131,8 +131,8 @@ pub(crate) async fn join(
     Ok(Json(models::JoinResponse { id: id.to_string() }))
 }
 
-pub(crate) async fn close_room(State(shared_state): State<SharedState>) -> JsonResult<()> {
-    let mut state = shared_state.write().unwrap();
+pub(crate) async fn close_room(State(state): State<SharedState>) -> JsonResult<()> {
+    let mut state = state.write().unwrap();
 
     game::start_game(&mut state).map_err(|err| {
         info!("Failed to close room: {}", err);
@@ -145,8 +145,8 @@ pub(crate) async fn close_room(State(shared_state): State<SharedState>) -> JsonR
     Ok(Json(()))
 }
 
-pub(crate) async fn reset_room(State(shared_state): State<SharedState>) -> Json<()> {
-    let mut state = shared_state.write().unwrap();
+pub(crate) async fn reset_room(State(state): State<SharedState>) -> Json<()> {
+    let mut state = state.write().unwrap();
 
     *state = state::State::default();
 
