@@ -48,6 +48,7 @@ pub(crate) fn start_game(state: &mut state::State) -> Result<(), String> {
 
     state.round.cards_on_table.clear();
     state.round.pot = 0;
+    reset_players(state);
     next_turn(state, None);
     if state.status == state::GameStatus::Complete {
         state.round.deck = cards::Deck::default();
@@ -62,8 +63,11 @@ pub(crate) fn add_new_player(
     state: &mut state::State,
     player_name: &str,
 ) -> Result<state::PlayerId, String> {
-    if state.status != state::GameStatus::Joining {
+    if state.status == state::GameStatus::Playing {
         return Err("Game already started".to_string());
+    }
+    if state.players.len() >= state::MAX_PLAYERS {
+        return Err("Room is full".to_string());
     }
     let player_id = state::PlayerId::default();
     let card_1 = state.round.deck.pop().unwrap();
@@ -91,7 +95,7 @@ pub(crate) fn accept_player_stake(
         return Err("Not your turn".to_string());
     }
 
-    let stake = validate_player_stake(state, stake, player_id, action)?;
+    let stake = validate_player_stake(state, stake, player_id, &action)?;
 
     let player = state
         .players
@@ -106,6 +110,11 @@ pub(crate) fn accept_player_stake(
     player.balance = new_balance;
     player.stake += stake;
     state.round.pot += stake;
+
+    if let models::PlayAction::Raise = action {
+        state.round.raises.push((player_id.clone(), player.stake));
+    }
+
     next_turn(state, Some(player_id));
 
     if state.round.players_turn.is_none() {
@@ -113,6 +122,37 @@ pub(crate) fn accept_player_stake(
     }
 
     Ok(())
+}
+
+fn accept_blinds(
+    state: &mut state::State,
+    small_blind_player: state::PlayerId,
+    big_blind_player: state::PlayerId,
+) {
+    let small_blind_player = state
+        .players
+        .get_mut(&small_blind_player)
+        .expect("Small blind player not found");
+    let small_blind_stake = small_blind_player.balance.min(state::SMALL_BLIND);
+    small_blind_player.balance = small_blind_player.balance - small_blind_stake;
+    small_blind_player.stake += small_blind_stake;
+    state.round.pot += small_blind_stake;
+
+    let big_blind_player = state
+        .players
+        .get_mut(&big_blind_player)
+        .expect("Big blind player not found");
+
+    let big_blind_stake = big_blind_player.balance.min(state::BIG_BLIND);
+
+    big_blind_player.balance = big_blind_player.balance - big_blind_stake;
+    big_blind_player.stake += big_blind_stake;
+    state.round.pot += big_blind_stake;
+
+    state
+        .round
+        .raises
+        .push((big_blind_player.id.clone(), big_blind_stake));
 }
 
 fn reset_players(state: &mut state::State) {
@@ -123,20 +163,44 @@ fn reset_players(state: &mut state::State) {
 }
 
 fn next_turn(state: &mut state::State, current_player_id: Option<&state::PlayerId>) {
-    let next_player_id = if let Some(player_id) = current_player_id {
-        get_next_players_turn(&state, player_id)
-    } else {
-        reset_players(state);
-        state.players.keys().next().cloned()
+    let next_player_id = match current_player_id {
+        Some(player_id) => get_next_players_turn(&state, player_id),
+        None if state.players.len() < 2 => {
+            info!("Not enough players, pausing game");
+            state.round.players_turn = None;
+            return;
+        }
+        None if state.round.cards_on_table.is_empty() => {
+            let mut player_ids = state.players.keys().cloned().cycle();
+            let small_blind_player = player_ids.next().unwrap();
+            let big_blind_player = player_ids.next().unwrap();
+            let next_player_id = player_ids.next();
+
+            info!(
+                "Accepting blinds from players {} (sm) and {} (lg)",
+                small_blind_player, big_blind_player
+            );
+            accept_blinds(state, small_blind_player, big_blind_player);
+
+            next_player_id
+        }
+        None => state.players.keys().cloned().next(),
     };
-    if let Some(next_player) = next_player_id
+
+    match next_player_id
         .as_ref()
         .and_then(|id| state.players.get_mut(id))
     {
-        let mut expires = state::dt::Instant::default();
-        expires.add_seconds(state::PLAYER_TURN_TIMEOUT_SECONDS);
-        next_player.ttl = Some(expires);
+        Some(next_player) => {
+            let mut expires = state::dt::Instant::default();
+            expires.add_seconds(state::PLAYER_TURN_TIMEOUT_SECONDS);
+            next_player.ttl = Some(expires);
+        }
+        None => {
+            info!("Round complete, awaiting next round");
+        }
     }
+
     state.round.players_turn = next_player_id;
 }
 
@@ -144,15 +208,6 @@ fn get_next_players_turn(
     state: &state::State,
     current_player_id: &state::PlayerId,
 ) -> Option<state::PlayerId> {
-    let next_player = state
-        .players
-        .iter()
-        .skip_while(|(id, _)| id != &current_player_id)
-        .skip(1)
-        .filter(|(_, player)| !player.folded)
-        .next()
-        .map(|(id, _)| id.clone());
-
     let target_stake = state
         .round
         .raises
@@ -160,11 +215,26 @@ fn get_next_players_turn(
         .map(|(_, stake)| *stake)
         .unwrap_or(0);
 
+    let next_player = state
+        .players
+        .iter()
+        .enumerate()
+        .skip_while(|(_, (id, _))| id != current_player_id)
+        .skip(1)
+        .filter(|(idx, (_, player))| {
+            !player.folded
+                && (state.round.cards_on_table.len() > 0
+                    || player.stake < target_stake
+                    || *idx == 1)
+        })
+        .next()
+        .map(|(_, (id, _))| id.clone());
+
     next_player.or_else(|| {
         state
             .players
             .iter()
-            .skip_while(|(_, player)| !player.folded)
+            .skip_while(|(_, player)| player.folded)
             .next()
             .filter(|(_, player)| player.stake < target_stake)
             .map(|(id, _)| id.clone())
@@ -175,11 +245,15 @@ fn validate_player_stake(
     state: &mut state::State,
     stake: u64,
     player_id: &state::PlayerId,
-    action: models::PlayAction,
+    action: &models::PlayAction,
 ) -> Result<u64, String> {
+    let last_raise = state.round.raises.last().map(|(_, s)| *s).unwrap_or(0);
+    let player_stake = state.players.get(player_id).map(|p| p.stake).unwrap_or(0);
     let stake = match action {
-        models::PlayAction::Check if !state.round.raises.is_empty() => {
-            return Err("Cannot check after a raise".to_string())
+        models::PlayAction::Check
+            if !state.round.raises.is_empty() && player_stake != last_raise =>
+        {
+            return Err("Cannot check after a raise".to_string());
         }
         models::PlayAction::Raise if stake == 0 => {
             return Err("Stake cannot be 0 for raise".to_string())
@@ -192,10 +266,12 @@ fn validate_player_stake(
             if stake < min_raise {
                 return Err(format!("Raise must be at least {}", min_raise));
             }
-            state.round.raises.push((player_id.clone(), stake));
             stake
         }
-        models::PlayAction::Call => call_amount(state).ok_or("No bets to call".to_string())?,
+        models::PlayAction::Call => {
+            let call = call_amount(state).ok_or("No bets to call".to_string())?;
+            call - player_stake
+        }
         models::PlayAction::Fold => unreachable!("Cannot handle fold action here"),
     };
     Ok(stake)
@@ -205,19 +281,18 @@ fn complete_round(state: &mut state::State) {
     match state.round.cards_on_table.len() {
         0 => {
             place_cards_on_table(state, 3);
-            rotate_dealer(state);
             next_turn(state, None);
             state.round.raises.clear();
         }
         3 | 4 => {
             place_cards_on_table(state, 1);
-            rotate_dealer(state);
             next_turn(state, None);
             state.round.raises.clear();
         }
         5 => {
-            rotate_dealer(state);
             complete_game(state);
+            reset_players(state);
+            rotate_dealer(state);
             state.round.raises.clear();
         }
         _ => unreachable!(),
@@ -240,6 +315,58 @@ fn rotate_dealer(state: &mut state::State) {
 fn complete_game(state: &mut state::State) {
     state.status = state::GameStatus::Complete;
     let round = &mut state.round;
+
+    #[derive(Clone, PartialEq, PartialOrd)]
+    struct PlayerStake {
+        id: state::PlayerId,
+        stake: u64,
+    }
+
+    let mut stakes: Vec<_> = state
+        .players
+        .values()
+        .filter(|p| !p.folded)
+        .map(|p| PlayerStake {
+            id: p.id.clone(),
+            stake: p.stake,
+        })
+        .collect();
+    stakes.sort_by_key(|s| s.stake);
+
+    let mut deduped_stakes = stakes.iter().map(|s| s.stake).collect::<Vec<_>>();
+    deduped_stakes.dedup();
+
+    let mut pots = vec![];
+
+    deduped_stakes.insert(0, 0);
+    for stake in deduped_stakes.windows(2) {
+        let (rel_stake, abs_stake) = (stake[1] - stake[0], stake[1]);
+
+        let winnable_players: Vec<_> = stakes
+            .iter()
+            .filter(|s| s.stake >= abs_stake)
+            .map(|s| s.id.clone())
+            .collect();
+
+        let pot = winnable_players.len() as u64 * rel_stake;
+        pots.push((pot, winnable_players));
+    }
+
+    // TODO: TEST! the stake values players that folded should still be included in the winnable pot
+    for (_, player) in state.players.iter().filter(|(_, p)| p.folded) {
+        let mut pot = pots
+            .iter_mut()
+            .skip_while(|(pot, players)| (*pot / players.len() as u64) < player.stake);
+
+        if let Some((pot, _)) = pot.next() {
+            println!(
+                "Player {} folded, adding {} stake to pot of {}",
+                player.id, player.stake, pot
+            );
+            *pot += player.stake;
+        }
+    }
+
     let mut scores: Vec<_> = state
         .players
         .values_mut()
@@ -251,20 +378,56 @@ fn complete_game(state: &mut state::State) {
 
     for (player, score) in &scores {
         info!(
-            "Player {} has score {} (rank {:?})",
-            player.id, score.1, score.0
+            "Player {} has score {} (cards {:?})",
+            player.id,
+            score.strength(),
+            score.cards()
         );
     }
 
-    let winning_hand = scores.iter_mut().max_by_key(|(_, score)| *score).unwrap();
-    let (winner, score) = winning_hand;
-    winner.balance += round.pot;
+    for (pot, players) in &pots {
+        let winning_hand = scores
+            .iter()
+            .filter(|(player, _)| players.contains(&player.id))
+            .map(|(_, score)| score.clone())
+            .max()
+            .unwrap();
+
+        let mut winning_players: Vec<_> = scores
+            .iter_mut()
+            .filter(|(player, score)| score == &winning_hand && players.contains(&player.id))
+            .map(|(player, _)| &mut **player)
+            .collect();
+
+        let winners_count = winning_players.len() as u64;
+        let payout = pot / winners_count;
+        for winner in winning_players.iter_mut() {
+            winner.balance += payout;
+        }
+
+        let winners = winning_players
+            .iter()
+            .map(|p| p.id.clone().to_string())
+            .collect::<Vec<_>>();
+
+        println!(
+            "Paid out pot to winners. Pot: {}, Winner(s): {}",
+            pot,
+            winners.join(", "),
+        );
+    }
+
+    let best_hand = scores.iter().map(|(_, score)| score.clone()).max().unwrap();
+    info!(
+        "Game complete, pot: {} ({} splits) (rank {:?}) cards: {:?}",
+        round.pot,
+        pots.len() - 1,
+        best_hand.strength(),
+        best_hand.cards()
+    );
+
     round.pot = 0;
     state.round.players_turn = None;
-    info!(
-        "Game complete, winner: {}, score: {} (rank {:?})",
-        winner.id, score.1, score.0
-    );
 }
 
 pub(crate) fn cards_on_table(state: &state::State) -> Vec<(cards::CardSuite, cards::CardValue)> {
@@ -314,7 +477,7 @@ pub(crate) fn completed_game(state: &state::State) -> Option<models::CompletedGa
                 cards::Card::evaluate_hand(&p.cards, &state.round.cards_on_table),
             )
         })
-        .max_by_key(|(_, score)| *score)?;
+        .max_by_key(|(_, score)| score.clone())?;
 
     let winner_idx = state
         .players
@@ -335,7 +498,7 @@ pub(crate) fn completed_game(state: &state::State) -> Option<models::CompletedGa
 
     Some(models::CompletedGame {
         winner_idx,
-        winning_hand: winning_hand.0.to_string(),
+        winning_hand: winning_hand.strength().to_string(),
         player_cards,
     })
 }
@@ -413,4 +576,77 @@ pub(crate) fn turn_expires_dt(state: &state::State, player_id: &state::PlayerId)
         .players
         .get(player_id)
         .and_then(|p| p.ttl.map(|dt| dt.into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn game_pays_outright_winner_from_pot() {
+        use models::PlayAction as P;
+        use state::BIG_BLIND;
+
+        let mut state = state::State::default();
+        let state = &mut state;
+        state.round.deck = cards::Deck::ordered();
+
+        let player_1 = add_new_player(state, "player_1").unwrap();
+        let player_2 = add_new_player(state, "player_2").unwrap();
+        let player_3 = add_new_player(state, "player_3").unwrap();
+        let player_4 = add_new_player(state, "player_4").unwrap();
+        let player_5 = add_new_player(state, "player_5").unwrap();
+
+        assert_eq!(state.players.len(), 5);
+        assert_eq!(state.status, state::GameStatus::Joining);
+        let starting_balance = state.players.iter().map(|(_, p)| p.balance).next().unwrap();
+        assert_eq!(starting_balance, state::STARTING_BALANCE);
+
+        start_game(state).unwrap();
+
+        assert_eq!(cards_on_table(state).len(), 0);
+
+        accept_player_stake(state, &player_3, BIG_BLIND, P::Call).expect("R1-P3");
+        accept_player_stake(state, &player_4, BIG_BLIND, P::Call).expect("R1-P4");
+        accept_player_stake(state, &player_5, BIG_BLIND, P::Call).expect("R1-P5");
+        accept_player_stake(state, &player_1, BIG_BLIND, P::Call).expect("R1-P1");
+        accept_player_stake(state, &player_2, 0, P::Check).expect("R1-P2");
+
+        assert_eq!(cards_on_table(state).len(), 3);
+
+        accept_player_stake(state, &player_1, 500, P::Raise).expect("R2-P1");
+        accept_player_stake(state, &player_2, 0, P::Call).expect("R2-P2");
+        accept_player_stake(state, &player_3, 0, P::Call).expect("R2-P3");
+        fold_player(state, &player_4).expect("R2-P4");
+        fold_player(state, &player_5).expect("R2-P4");
+
+        assert_eq!(cards_on_table(state).len(), 4);
+
+        accept_player_stake(state, &player_1, 0, P::Check).unwrap();
+        accept_player_stake(state, &player_2, 0, P::Check).unwrap();
+        accept_player_stake(state, &player_3, 0, P::Check).unwrap();
+
+        let pot_before_payout = state.round.pot;
+        let winner_balance_before_payout = state.players.get(&player_1).unwrap().balance;
+
+        assert_eq!(pot_before_payout, (BIG_BLIND * 5) + (500 * 3));
+        assert_eq!(cards_on_table(state).len(), 5);
+
+        accept_player_stake(state, &player_1, 0, P::Check).unwrap();
+        accept_player_stake(state, &player_2, 0, P::Check).unwrap();
+        accept_player_stake(state, &player_3, 0, P::Check).unwrap();
+
+        assert_eq!(cards_on_table(state).len(), 5);
+        assert_eq!(state.status, state::GameStatus::Complete);
+        assert_eq!(state.round.pot, 0);
+
+        // wins remaining 4 players blinds and remaining 2 players 500 bets
+        let winner = state.players.get(&player_1).unwrap();
+        let expected_balance = state::STARTING_BALANCE + BIG_BLIND * 4 + 500 * 2;
+        assert_eq!(
+            winner_balance_before_payout + pot_before_payout,
+            expected_balance
+        );
+        assert_eq!(winner.balance, expected_balance);
+    }
 }

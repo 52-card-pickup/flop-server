@@ -68,6 +68,7 @@ pub(crate) async fn player(
         min_raise_by: game::min_raise_by(&state),
         turn_expires_dt: game::turn_expires_dt(&state, &player.id),
         last_update: state.last_update.as_u64(),
+        current_round_stake: player.stake,
     };
 
     Ok(Json(game_player_state))

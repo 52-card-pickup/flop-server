@@ -1,22 +1,22 @@
-use std::{
-    collections::BTreeMap,
-    sync::{Arc, RwLock},
-};
+use std::sync::{Arc, RwLock};
 
 use crate::cards::{Card, Deck};
 
 pub use id::PlayerId;
+
+use self::players::Players;
 
 pub type SharedState = Arc<RwLock<State>>;
 
 pub const STARTING_BALANCE: u64 = 1000;
 pub const SMALL_BLIND: u64 = 10;
 pub const BIG_BLIND: u64 = 20;
-pub const PLAYER_TURN_TIMEOUT_SECONDS: u64 = 30;
+pub const PLAYER_TURN_TIMEOUT_SECONDS: u64 = 10;
+pub const MAX_PLAYERS: usize = 8;
 
 #[derive(Default)]
 pub struct State {
-    pub players: BTreeMap<PlayerId, Player>,
+    pub players: Players,
     pub round: Round,
     pub last_update: dt::SignalInstant,
     pub status: GameStatus,
@@ -43,7 +43,7 @@ pub struct Player {
     pub cards: (Card, Card),
 }
 
-#[derive(Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum GameStatus {
     #[default]
     Joining,
@@ -163,6 +163,66 @@ pub mod dt {
                 }
                 receiver
             }
+        }
+    }
+}
+
+mod players {
+    use std::collections::VecDeque;
+
+    use super::{Player, PlayerId};
+
+    #[derive(Default)]
+    pub struct Players(VecDeque<(PlayerId, Player)>);
+
+    impl Players {
+        pub fn insert(&mut self, player_id: PlayerId, player: Player) {
+            self.0.push_back((player_id, player));
+        }
+
+        pub fn get(&self, id: &PlayerId) -> Option<&Player> {
+            self.0
+                .iter()
+                .find_map(|(pid, p)| if pid == id { Some(p) } else { None })
+        }
+
+        pub fn get_mut(&mut self, id: &PlayerId) -> Option<&mut Player> {
+            self.0
+                .iter_mut()
+                .find_map(|(pid, p)| if pid == id { Some(p) } else { None })
+        }
+
+        pub fn remove(&mut self, id: &PlayerId) -> Option<Player> {
+            let idx = self.0.iter().position(|(pid, _)| pid == id)?;
+            self.0.remove(idx).map(|(_, p)| p)
+        }
+
+        pub fn pop_first(&mut self) -> Option<(PlayerId, Player)> {
+            self.0.pop_front()
+        }
+
+        pub fn iter(&self) -> std::collections::vec_deque::Iter<(PlayerId, Player)> {
+            self.0.iter()
+        }
+
+        pub fn keys(&self) -> std::vec::IntoIter<&PlayerId> {
+            self.0
+                .iter()
+                .map(|(player_id, _)| player_id)
+                .collect::<Vec<_>>()
+                .into_iter()
+        }
+
+        pub fn values(&self) -> impl Iterator<Item = &Player> {
+            self.0.iter().map(|(_, p)| p)
+        }
+
+        pub fn values_mut(&mut self) -> impl Iterator<Item = &mut Player> {
+            self.0.iter_mut().map(|(_, p)| p)
+        }
+
+        pub fn len(&self) -> usize {
+            self.0.len()
         }
     }
 }
