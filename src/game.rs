@@ -163,12 +163,6 @@ fn reset_players(state: &mut state::State) {
 }
 
 fn next_turn(state: &mut state::State, current_player_id: Option<&state::PlayerId>) {
-    if state.players.values().filter(|p| !p.folded).count() == 1 {
-        info!("All players but one have folded, completing round");
-        state.round.players_turn = None;
-        return;
-    }
-
     let next_player_id = match current_player_id {
         Some(player_id) => get_next_players_turn(&state, player_id),
         None if state.players.len() < 2 => {
@@ -284,15 +278,6 @@ fn validate_player_stake(
 }
 
 fn complete_round(state: &mut state::State) {
-    let all_players_except_one_folded = state.players.values().filter(|p| !p.folded).count() == 1;
-    if all_players_except_one_folded {
-        complete_game(state);
-        reset_players(state);
-        rotate_dealer(state);
-        state.round.raises.clear();
-        return;
-    }
-
     match state.round.cards_on_table.len() {
         0 => {
             place_cards_on_table(state, 3);
@@ -329,6 +314,15 @@ fn rotate_dealer(state: &mut state::State) {
 
 fn complete_game(state: &mut state::State) {
     state.status = state::GameStatus::Complete;
+    if all_bar_one_player_folded(state) {
+        println!("All players but one have folded, completing round");
+        let winner = state.players.values_mut().find(|p| !p.folded).unwrap();
+        winner.balance += state.round.pot;
+        state.round.pot = 0;
+        state.round.players_turn = None;
+        return;
+    }
+
     let round = &mut state.round;
 
     #[derive(Clone, PartialEq, PartialOrd)]
@@ -382,17 +376,12 @@ fn complete_game(state: &mut state::State) {
         }
     }
 
-    let all_but_one_folded = state.players.values().filter(|p| !p.folded).count() == 1;
-
     let mut scores: Vec<_> = state
         .players
         .values_mut()
         .map(|p| {
-            if (p.folded || all_but_one_folded) {
-                return (p, None);
-            }
             let score = cards::Card::evaluate_hand(&p.cards, &round.cards_on_table);
-            (p, Some(score))
+            (p, score)
         })
         .collect();
 
@@ -400,11 +389,8 @@ fn complete_game(state: &mut state::State) {
         info!(
             "Player {} has score {} (cards {:?})",
             player.id,
-            score
-                .as_ref()
-                .map(|s| s.strength().to_string())
-                .unwrap_or("folded".to_string()),
-            score.as_ref().map(|s| s.cards())
+            score.strength(),
+            score.cards()
         );
     }
 
@@ -445,8 +431,8 @@ fn complete_game(state: &mut state::State) {
         "Game complete, pot: {} ({} splits) (rank {:?}) cards: {:?}",
         round.pot,
         pots.len() - 1,
-        best_hand.as_ref().map(|s| s.strength()),
-        best_hand.as_ref().map(|s| s.cards())
+        best_hand.strength(),
+        best_hand.cards()
     );
 
     round.pot = 0;
@@ -554,11 +540,24 @@ pub(crate) fn fold_player(
     player.folded = true;
     next_turn(state, Some(player_id));
 
+    if all_bar_one_player_folded(state) {
+        info!("All players but one have folded, completing round");
+        state.round.players_turn = None;
+        complete_game(state);
+        reset_players(state);
+        rotate_dealer(state);
+        state.round.raises.clear();
+    }
+
     if state.round.players_turn.is_none() {
         complete_round(state);
     }
 
     Ok(())
+}
+
+fn all_bar_one_player_folded(state: &mut state::State) -> bool {
+    state.players.values().filter(|p| !p.folded).count() == 1
 }
 
 pub(crate) fn reset_ttl(state: &mut state::State, id: &state::PlayerId) -> Result<(), String> {
