@@ -315,7 +315,6 @@ fn rotate_dealer(state: &mut state::State) {
 fn complete_game(state: &mut state::State) {
     state.status = state::GameStatus::Complete;
     if all_bar_one_player_folded(state) {
-        println!("All players but one have folded, completing round");
         let winner = state.players.values_mut().find(|p| !p.folded).unwrap();
         winner.balance += state.round.pot;
         state.round.pot = 0;
