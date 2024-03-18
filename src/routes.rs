@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use crate::{
     game, models,
     state::{self, SharedState},
@@ -10,7 +8,7 @@ use aide::axum::{
     ApiRouter,
 };
 use axum::{
-    extract::{self, Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     Json,
 };
@@ -30,8 +28,8 @@ pub(crate) fn api_routes(state: state::SharedState) -> ApiRouter {
 }
 
 pub(crate) async fn room(
-    extract::State(state): State<SharedState>,
-    extract::Query(query): extract::Query<HashMap<String, String>>,
+    State(state): State<SharedState>,
+    Query(query): Query<models::PollQuery>,
 ) -> Json<models::GameClientRoom> {
     utils::wait_for_update(&state, query).await;
 
@@ -52,7 +50,7 @@ pub(crate) async fn room(
 pub(crate) async fn player(
     State(state): State<SharedState>,
     Path(player_id): Path<String>,
-    extract::Query(query): extract::Query<HashMap<String, String>>,
+    Query(query): Query<models::PollQuery>,
 ) -> JsonResult<models::GamePlayerState> {
     utils::wait_for_update(&state, query).await;
 
@@ -157,12 +155,10 @@ pub(crate) async fn reset_room(State(state): State<SharedState>) -> Json<()> {
 }
 
 mod utils {
-    use std::collections::HashMap;
-
     use axum::http::StatusCode;
     use tracing::info;
 
-    use crate::state;
+    use crate::{models, state};
 
     pub fn validate_player(
         player_id: &str,
@@ -181,18 +177,15 @@ mod utils {
 
     pub async fn wait_for_update(
         state: &std::sync::Arc<std::sync::RwLock<state::State>>,
-        query: HashMap<String, String>,
+        query: models::PollQuery,
     ) {
-        if let Some(last_update) = query.get("since").and_then(|s| s.parse::<u64>().ok()) {
+        if let Some(last_update) = query.since {
             let rx = {
                 let state = state.read().unwrap();
                 state.last_update.wait_for(last_update.into())
             };
 
-            let timeout_ms = query
-                .get("timeout")
-                .and_then(|s| s.parse::<u64>().ok())
-                .unwrap_or(5_000);
+            let timeout_ms = query.timeout.unwrap_or(5_000);
             let timeout = std::time::Duration::from_millis(timeout_ms);
 
             tokio::select! {
