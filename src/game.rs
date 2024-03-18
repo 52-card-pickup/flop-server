@@ -293,6 +293,8 @@ fn complete_round(state: &mut state::State) {
             complete_game(state);
             reset_players(state);
             rotate_dealer(state);
+            state.round.pot = 0;
+            state.round.players_turn = None;
             state.round.raises.clear();
         }
         _ => unreachable!(),
@@ -336,6 +338,24 @@ fn complete_game(state: &mut state::State) {
     let mut deduped_stakes = stakes.iter().map(|s| s.stake).collect::<Vec<_>>();
     deduped_stakes.dedup();
 
+    match stakes.len() {
+        1 => {
+            let winner = stakes.first().unwrap();
+            let player = state.players.get_mut(&winner.id).unwrap();
+            player.balance += round.pot;
+            info!(
+                "Player {} is the only player left, whole pot is won, pot: {}",
+                player.id, round.pot
+            );
+            return;
+        }
+        0 => {
+            info!("No players left, pot is lost");
+            return;
+        }
+        _ => {}
+    }
+
     let mut pots = vec![];
 
     deduped_stakes.insert(0, 0);
@@ -359,7 +379,7 @@ fn complete_game(state: &mut state::State) {
             .skip_while(|(pot, players)| (*pot / players.len() as u64) < player.stake);
 
         if let Some((pot, _)) = pot.next() {
-            println!(
+            info!(
                 "Player {} folded, adding {} stake to pot of {}",
                 player.id, player.stake, pot
             );
@@ -410,24 +430,22 @@ fn complete_game(state: &mut state::State) {
             .map(|p| p.id.clone().to_string())
             .collect::<Vec<_>>();
 
-        println!(
+        info!(
             "Paid out pot to winners. Pot: {}, Winner(s): {}",
             pot,
             winners.join(", "),
         );
     }
 
+    let pot_splits = pots.len().saturating_sub(1);
     let best_hand = scores.iter().map(|(_, score)| score.clone()).max().unwrap();
     info!(
         "Game complete, pot: {} ({} splits) (rank {:?}) cards: {:?}",
         round.pot,
-        pots.len() - 1,
+        pot_splits,
         best_hand.strength(),
         best_hand.cards()
     );
-
-    round.pot = 0;
-    state.round.players_turn = None;
 }
 
 pub(crate) fn cards_on_table(state: &state::State) -> Vec<(cards::CardSuite, cards::CardValue)> {
