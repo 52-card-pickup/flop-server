@@ -601,12 +601,11 @@ pub(crate) fn turn_expires_dt(state: &state::State, player_id: &state::PlayerId)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::SMALL_BLIND;
+    use crate::state::{BIG_BLIND, SMALL_BLIND, STARTING_BALANCE};
 
     #[test]
     fn game_pays_outright_winner_from_pot() {
         use models::PlayAction as P;
-        use state::BIG_BLIND;
 
         let mut state = state::State::default();
         let state = &mut state;
@@ -663,7 +662,7 @@ mod tests {
 
         // wins remaining 4 players blinds and remaining 2 players 500 bets
         let winner = state.players.get(&player_1).unwrap();
-        let expected_balance = state::STARTING_BALANCE + BIG_BLIND * 4 + 500 * 2;
+        let expected_balance = STARTING_BALANCE + BIG_BLIND * 4 + 500 * 2;
         assert_eq!(
             winner_balance_before_payout + pot_before_payout,
             expected_balance
@@ -674,30 +673,15 @@ mod tests {
     #[test]
     fn game_pays_out_to_winner_after_others_fold() {
         use models::PlayAction as P;
-        use state::BIG_BLIND;
 
-        let mut state = state::State::default();
-        let state = &mut state;
-        state.round.deck = cards::Deck::ordered();
+        let (mut state, (player_1, player_2)) = fixtures::start_two_player_game();
 
-        let player_1 = add_new_player(state, "player_1").unwrap();
-        let player_2 = add_new_player(state, "player_2").unwrap();
+        accept_player_stake(&mut state, &player_1, SMALL_BLIND, P::Call).expect("R1-P1");
+        accept_player_stake(&mut state, &player_2, 0, P::Call).expect("R1-P2");
 
-        assert_eq!(state.players.len(), 2);
-        assert_eq!(state.status, state::GameStatus::Joining);
-        let starting_balance = state.players.iter().map(|(_, p)| p.balance).next().unwrap();
-        assert_eq!(starting_balance, state::STARTING_BALANCE);
+        assert_eq!(cards_on_table(&state).len(), 3);
 
-        start_game(state).unwrap();
-
-        assert_eq!(cards_on_table(state).len(), 0);
-
-        accept_player_stake(state, &player_1, SMALL_BLIND, P::Call).expect("R1-P1");
-        accept_player_stake(state, &player_2, 0, P::Call).expect("R1-P2");
-
-        assert_eq!(cards_on_table(state).len(), 3);
-
-        fold_player(state, &player_1).expect("R2-P1");
+        fold_player(&mut state, &player_1).expect("R2-P1");
         info!(
             "Player 2 stakes: {}",
             state.players.get(&player_2).unwrap().stake
@@ -706,33 +690,76 @@ mod tests {
         assert_eq!(state.round.pot, 0);
 
         let winner = state.players.get(&player_2).unwrap();
-        assert_eq!(winner.balance, state::STARTING_BALANCE + BIG_BLIND);
+        assert_eq!(winner.balance, STARTING_BALANCE + BIG_BLIND);
     }
 
     #[test]
     fn two_player_game_fold_on_small_blind() {
-        let mut state = state::State::default();
-        let state = &mut state;
-        state.round.deck = cards::Deck::ordered();
-
-        let player_1 = add_new_player(state, "player_1").unwrap();
-        let player_2 = add_new_player(state, "player_2").unwrap();
-
-        assert_eq!(state.players.len(), 2);
-        assert_eq!(state.status, state::GameStatus::Joining);
-        let starting_balance = state.players.iter().map(|(_, p)| p.balance).next().unwrap();
-        assert_eq!(starting_balance, state::STARTING_BALANCE);
-
-        start_game(state).unwrap();
-
-        assert_eq!(cards_on_table(state).len(), 0);
+        let (mut state, (player_1, player_2)) = fixtures::start_two_player_game();
+        assert_eq!(cards_on_table(&state).len(), 0);
         assert_eq!(state.round.pot, 30);
 
-        fold_player(state, &player_1).expect("R2-P1");
+        fold_player(&mut state, &player_1).expect("R2-P1");
         assert_eq!(state.status, state::GameStatus::Complete);
         assert_eq!(state.round.pot, 0);
 
         let winner = state.players.get(&player_2).unwrap();
-        assert_eq!(winner.balance, state::STARTING_BALANCE + SMALL_BLIND);
+        assert_eq!(winner.balance, STARTING_BALANCE + SMALL_BLIND);
+    }
+
+    #[test]
+    fn two_player_game_fold_on_big_blind() {
+        use models::PlayAction as P;
+
+        let (mut state, (player_1, player_2)) = fixtures::start_two_player_game();
+        assert_eq!(cards_on_table(&state).len(), 0);
+        assert_eq!(state.round.pot, 30);
+
+        accept_player_stake(&mut state, &player_1, BIG_BLIND, P::Call).unwrap();
+        fold_player(&mut state, &player_2).expect("R2-P2");
+        assert_eq!(state.status, state::GameStatus::Complete);
+        assert_eq!(state.round.pot, 0);
+
+        let winner = state.players.get(&player_1).unwrap();
+        assert_eq!(winner.balance, STARTING_BALANCE + BIG_BLIND);
+    }
+
+    #[test]
+    fn two_player_game_fold_on_raise() {
+        use models::PlayAction as P;
+
+        let (mut state, (player_1, player_2)) = fixtures::start_two_player_game();
+        assert_eq!(cards_on_table(&state).len(), 0);
+        assert_eq!(state.round.pot, 30);
+
+        accept_player_stake(&mut state, &player_1, BIG_BLIND, P::Call).unwrap();
+        accept_player_stake(&mut state, &player_2, BIG_BLIND * 2, P::Raise).unwrap();
+        fold_player(&mut state, &player_1).expect("R2-P1");
+        assert_eq!(state.status, state::GameStatus::Complete);
+        assert_eq!(state.round.pot, 0);
+
+        let winner = state.players.get(&player_2).unwrap();
+        assert_eq!(winner.balance, STARTING_BALANCE + BIG_BLIND);
+    }
+
+    mod fixtures {
+        use super::*;
+
+        pub fn start_two_player_game() -> (state::State, (state::PlayerId, state::PlayerId)) {
+            let mut state = state::State::default();
+            state.round.deck = cards::Deck::ordered();
+
+            let player_1 = add_new_player(&mut state, "player_1").unwrap();
+            let player_2 = add_new_player(&mut state, "player_2").unwrap();
+
+            assert_eq!(state.players.len(), 2);
+            assert_eq!(state.status, state::GameStatus::Joining);
+            let starting_balance = state.players.iter().map(|(_, p)| p.balance).next().unwrap();
+            assert_eq!(starting_balance, STARTING_BALANCE);
+
+            start_game(&mut state).unwrap();
+
+            (state, (player_1, player_2))
+        }
     }
 }
