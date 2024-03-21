@@ -510,6 +510,7 @@ pub(crate) fn room_players(state: &state::State) -> Vec<models::GameClientPlayer
         .map(|(_, p)| models::GameClientPlayer {
             name: p.name.clone(),
             balance: p.balance,
+            folded: p.folded,
             turn_expires_dt: p.ttl.map(|dt| dt.into()),
         })
         .collect();

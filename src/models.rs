@@ -69,6 +69,7 @@ pub(crate) struct CompletedGame {
 pub(crate) struct GameClientPlayer {
     pub(crate) name: String,
     pub(crate) balance: u64,
+    pub(crate) folded: bool,
     pub(crate) turn_expires_dt: Option<u64>,
 }
 
