@@ -216,6 +216,25 @@ fn get_next_players_turn(
         .map(|(_, stake)| *stake)
         .unwrap_or(0);
 
+    fn validate_next_player(
+        state: &state::State,
+        current_player_id: &state::PlayerId,
+        target_stake: u64,
+        next_player_id: &state::PlayerId,
+    ) -> bool {
+        let next_player = state.players.get(next_player_id).unwrap();
+        let pre_flop = state.round.cards_on_table.len() < 3;
+
+        // Special handling for pre-flop big blind's turn
+        let is_big_blind_pre_flop =
+            next_player_id == state.players.keys().nth(1).unwrap() && pre_flop;
+
+        !next_player.folded
+            && (next_player.stake < target_stake
+                || target_stake == 0
+                || next_player_id == current_player_id
+                || is_big_blind_pre_flop)
+    }
     let next_player = state
         .players
         .iter()
@@ -223,10 +242,7 @@ fn get_next_players_turn(
         .skip_while(|(_, (id, _))| id != current_player_id)
         .skip(1)
         .filter(|(idx, (_, player))| {
-            !player.folded
-                && (state.round.cards_on_table.len() > 0
-                    || player.stake < target_stake
-                    || *idx == 1)
+            validate_next_player(state, current_player_id, target_stake, &player.id)
         })
         .next()
         .map(|(_, (id, _))| id.clone());
@@ -263,7 +279,7 @@ fn validate_player_stake(
         models::PlayAction::Raise => {
             let call_amount = call_amount(state).unwrap_or(0);
             let min_raise_by = min_raise_by(state);
-            let min_raise = call_amount + min_raise_by;
+            let min_raise = call_amount.max(min_raise_by);
             if stake < min_raise {
                 return Err(format!("Raise must be at least {}", min_raise));
             }
@@ -672,17 +688,13 @@ mod tests {
     }
 
     #[test]
-    fn game_pays_out_to_winner_after_others_fold() {
-        use models::PlayAction as P;
-
+    fn two_player_game_pays_out_to_winner_after_others_fold_in_two_rounds() {
         let (mut state, (player_1, player_2)) = fixtures::start_two_player_game();
 
-        accept_player_stake(&mut state, &player_1, SMALL_BLIND, P::Call).expect("R1-P1");
-        accept_player_stake(&mut state, &player_2, 0, P::Call).expect("R1-P2");
-
-        assert_eq!(cards_on_table(&state).len(), 3);
+        assert_eq!(cards_on_table(&state).len(), 0);
 
         fold_player(&mut state, &player_1).expect("R2-P1");
+        assert_eq!(cards_on_table(&state).len(), 0);
         info!(
             "Player 2 stakes: {}",
             state.players.get(&player_2).unwrap().stake
@@ -691,7 +703,21 @@ mod tests {
         assert_eq!(state.round.pot, 0);
 
         let winner = state.players.get(&player_2).unwrap();
-        assert_eq!(winner.balance, STARTING_BALANCE + BIG_BLIND);
+        assert_eq!(winner.balance, STARTING_BALANCE + SMALL_BLIND);
+
+        start_game(&mut state).unwrap();
+        assert_eq!(cards_on_table(&state).len(), 0);
+
+        let player_2_data = state.players.get(&player_2).unwrap();
+        assert_eq!(player_2_data.stake, SMALL_BLIND);
+
+        fold_player(&mut state, &player_2).expect("R2-P2");
+
+        assert_eq!(cards_on_table(&state).len(), 0);
+        assert_eq!(state.status, state::GameStatus::Complete);
+
+        let winner = state.players.get(&player_1).unwrap();
+        assert_eq!(winner.balance, STARTING_BALANCE);
     }
 
     #[test]
@@ -743,6 +769,57 @@ mod tests {
         assert_eq!(winner.balance, STARTING_BALANCE + BIG_BLIND);
     }
 
+    #[test]
+    fn three_player_game_fold_on_small_blind() {
+        let (mut state, (player_1, player_2, player_3)) = fixtures::start_three_player_game();
+        assert_eq!(cards_on_table(&state).len(), 0);
+        assert_eq!(state.round.pot, 30);
+
+        fold_player(&mut state, &player_3).expect("R2-P3");
+        fold_player(&mut state, &player_1).expect("R2-P1");
+        assert_eq!(state.status, state::GameStatus::Complete);
+
+        let winner = state.players.get(&player_2).unwrap();
+        assert_eq!(winner.balance, STARTING_BALANCE + SMALL_BLIND);
+    }
+
+    #[test]
+    fn three_player_game_check_until_river_then_raise_on_last_player() {
+        let (mut state, (player_1, player_2, player_3)) = fixtures::start_three_player_game();
+        assert_eq!(cards_on_table(&state).len(), 0);
+        assert_eq!(state.round.pot, 30);
+
+        accept_player_stake(&mut state, &player_3, BIG_BLIND, models::PlayAction::Call).unwrap();
+        accept_player_stake(&mut state, &player_1, BIG_BLIND, models::PlayAction::Call).unwrap();
+        accept_player_stake(&mut state, &player_2, BIG_BLIND, models::PlayAction::Check).unwrap();
+
+        assert_eq!(cards_on_table(&state).len(), 3);
+        assert_eq!(state.round.pot, 60);
+
+        accept_player_stake(&mut state, &player_1, 0, models::PlayAction::Check).unwrap();
+        accept_player_stake(&mut state, &player_2, 0, models::PlayAction::Check).unwrap();
+        accept_player_stake(&mut state, &player_3, 0, models::PlayAction::Check).unwrap();
+
+        assert_eq!(cards_on_table(&state).len(), 4);
+        assert_eq!(state.round.pot, 60);
+
+        accept_player_stake(&mut state, &player_1, 0, models::PlayAction::Check).unwrap();
+        accept_player_stake(&mut state, &player_2, 0, models::PlayAction::Check).unwrap();
+        accept_player_stake(&mut state, &player_3, 0, models::PlayAction::Check).unwrap();
+
+        assert_eq!(cards_on_table(&state).len(), 5);
+        assert_eq!(state.round.pot, 60);
+
+        accept_player_stake(&mut state, &player_1, 100, models::PlayAction::Raise).unwrap();
+        accept_player_stake(&mut state, &player_2, 0, models::PlayAction::Call).unwrap();
+
+        accept_player_stake(&mut state, &player_3, 200, models::PlayAction::Raise).unwrap();
+        accept_player_stake(&mut state, &player_1, 0, models::PlayAction::Call).unwrap();
+        accept_player_stake(&mut state, &player_2, 0, models::PlayAction::Call).unwrap();
+
+        assert_eq!(state.status, state::GameStatus::Complete);
+    }
+
     mod fixtures {
         use super::*;
 
@@ -761,6 +838,27 @@ mod tests {
             start_game(&mut state).unwrap();
 
             (state, (player_1, player_2))
+        }
+
+        pub fn start_three_player_game() -> (
+            state::State,
+            (state::PlayerId, state::PlayerId, state::PlayerId),
+        ) {
+            let mut state = state::State::default();
+            state.round.deck = cards::Deck::ordered();
+
+            let player_1 = add_new_player(&mut state, "player_1").unwrap();
+            let player_2 = add_new_player(&mut state, "player_2").unwrap();
+            let player_3 = add_new_player(&mut state, "player_3").unwrap();
+
+            assert_eq!(state.players.len(), 3);
+            assert_eq!(state.status, state::GameStatus::Joining);
+            let starting_balance = state.players.iter().map(|(_, p)| p.balance).next().unwrap();
+            assert_eq!(starting_balance, STARTING_BALANCE);
+
+            start_game(&mut state).unwrap();
+
+            (state, (player_1, player_2, player_3))
         }
     }
 }
