@@ -452,40 +452,6 @@ fn payout_game_winners(state: &mut state::State) {
     round.pot = 0;
 }
 
-pub(crate) fn cards_on_table(state: &state::State) -> Vec<(cards::CardSuite, cards::CardValue)> {
-    let cards = state
-        .round
-        .cards_on_table
-        .iter()
-        .map(|c| (c.suite.clone(), c.value.clone()))
-        .collect();
-    cards
-}
-
-pub(crate) fn cards_in_hand(
-    state: &state::State,
-    player_id: &state::PlayerId,
-) -> (
-    (cards::CardSuite, cards::CardValue),
-    (cards::CardSuite, cards::CardValue),
-) {
-    let player = state.players.get(player_id).unwrap();
-    let cards = player.cards.clone();
-    let cards = (
-        (cards.0.suite.clone(), cards.0.value.clone()),
-        (cards.1.suite.clone(), cards.1.value.clone()),
-    );
-    cards
-}
-
-pub(crate) fn game_phase(state: &state::State) -> models::GamePhase {
-    match state.status {
-        state::GameStatus::Joining => models::GamePhase::Waiting,
-        state::GameStatus::Playing => models::GamePhase::Playing,
-        state::GameStatus::Complete => models::GamePhase::Complete,
-    }
-}
-
 pub(crate) fn completed_game(state: &state::State) -> Option<models::CompletedGame> {
     if state.status != state::GameStatus::Complete {
         return None;
@@ -523,20 +489,6 @@ pub(crate) fn completed_game(state: &state::State) -> Option<models::CompletedGa
         winning_hand: winning_hand.strength().to_string(),
         player_cards,
     })
-}
-
-pub(crate) fn room_players(state: &state::State) -> Vec<models::GameClientPlayer> {
-    let players = state
-        .players
-        .iter()
-        .map(|(_, p)| models::GameClientPlayer {
-            name: p.name.clone(),
-            balance: p.balance,
-            folded: p.folded,
-            turn_expires_dt: p.ttl.map(|dt| dt.into()),
-        })
-        .collect();
-    players
 }
 
 pub(crate) fn fold_player(
@@ -593,6 +545,54 @@ pub(crate) fn reset_ttl(state: &mut state::State, id: &state::PlayerId) -> Resul
         },
         None => Err("Player not found".to_string()),
     }
+}
+
+pub(crate) fn cards_on_table(state: &state::State) -> Vec<(cards::CardSuite, cards::CardValue)> {
+    let cards = state
+        .round
+        .cards_on_table
+        .iter()
+        .map(|c| (c.suite.clone(), c.value.clone()))
+        .collect();
+    cards
+}
+
+pub(crate) fn cards_in_hand(
+    state: &state::State,
+    player_id: &state::PlayerId,
+) -> (
+    (cards::CardSuite, cards::CardValue),
+    (cards::CardSuite, cards::CardValue),
+) {
+    let player = state.players.get(player_id).unwrap();
+    let cards = player.cards.clone();
+    let cards = (
+        (cards.0.suite.clone(), cards.0.value.clone()),
+        (cards.1.suite.clone(), cards.1.value.clone()),
+    );
+    cards
+}
+
+pub(crate) fn game_phase(state: &state::State) -> models::GamePhase {
+    match state.status {
+        state::GameStatus::Joining => models::GamePhase::Waiting,
+        state::GameStatus::Playing => models::GamePhase::Playing,
+        state::GameStatus::Complete => models::GamePhase::Complete,
+    }
+}
+
+pub(crate) fn room_players(state: &state::State) -> Vec<models::GameClientPlayer> {
+    let players = state
+        .players
+        .iter()
+        .map(|(_, p)| models::GameClientPlayer {
+            name: p.name.clone(),
+            balance: p.balance,
+            folded: p.folded,
+            turn_expires_dt: p.ttl.map(|dt| dt.into()),
+        })
+        .collect();
+    players
 }
 
 pub(crate) fn call_amount(state: &state::State) -> Option<u64> {
