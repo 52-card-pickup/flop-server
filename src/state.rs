@@ -11,7 +11,8 @@ pub type SharedState = Arc<RwLock<State>>;
 pub const STARTING_BALANCE: u64 = 1000;
 pub const SMALL_BLIND: u64 = 10;
 pub const BIG_BLIND: u64 = 20;
-pub const PLAYER_TURN_TIMEOUT_SECONDS: u64 = 10;
+pub const PLAYER_TURN_TIMEOUT_SECONDS: u64 = 60;
+pub const GAME_IDLE_TIMEOUT_SECONDS: u64 = 300;
 pub const MAX_PLAYERS: usize = 8;
 
 #[derive(Default)]

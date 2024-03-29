@@ -6,13 +6,35 @@ pub(crate) fn spawn_game_worker(state: state::SharedState) {
     fn run_tasks(state: &state::SharedState) {
         let now = state::dt::Instant::default();
 
-        let current_player = {
+        let (last_update, current_player, status) = {
             let state = state.read().unwrap();
-            if state.status != state::GameStatus::Playing {
-                return;
-            }
+            let last_update: u64 = state.last_update.into();
             let players_turn = state.round.players_turn.clone();
-            players_turn.and_then(|id| state.players.get(&id)).cloned()
+            let current_player = players_turn.and_then(|id| state.players.get(&id)).cloned();
+
+            (last_update, current_player, state.status)
+        };
+
+        let now_ms: u64 = now.into();
+        let idle_ms = match status {
+            state::GameStatus::Joining => Some(state::GAME_IDLE_TIMEOUT_SECONDS * 1000),
+            state::GameStatus::Complete => Some(state::GAME_IDLE_TIMEOUT_SECONDS * 1000 * 4),
+            state::GameStatus::Playing => None,
+        };
+
+        if idle_ms.map_or(false, |idle_ms| now_ms - last_update > idle_ms) {
+            if let Ok("true") = std::env::var("KILL_ON_IDLE").as_deref() {
+                info!("KILL_ON_IDLE is set, exiting...");
+                // TODO: graceful shutdown
+                std::process::exit(0);
+            }
+
+            let mut state = state.write().unwrap();
+            if !state.round.deck.is_fresh() || state.status == state::GameStatus::Complete {
+                info!("Game idle timeout, resetting game");
+                *state = state::State::default();
+                state.last_update.set_now();
+            }
         };
 
         if let Some(player) = current_player {
