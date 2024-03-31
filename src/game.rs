@@ -136,12 +136,13 @@ pub(crate) fn accept_player_stake(
                 return Err(format!("Raise must be at least {}", min_raise_to));
             }
             state.round.raises.push((player_id.clone(), stake));
+            let pot_addition = stake - player_stake_in_round;
             (
                 player
                     .balance
-                    .checked_sub(stake)
+                    .checked_sub(pot_addition)
                     .ok_or("Not enough balance".to_string())?,
-                stake - player_stake_in_round,
+                pot_addition,
             )
         }
     };
@@ -966,6 +967,39 @@ mod tests {
         accept_player_stake(&mut state, &player_1, 0, models::PlayAction::Call).unwrap();
 
         assert_eq!(cards_on_table(&state).len(), 3);
+    }
+
+    #[test]
+    fn two_player_game_raising_with_intermittent_calls_checking_balances() {
+        let (mut state, (player_1, player_2)) =
+            fixtures::start_two_player_game(GameFixture::Round1);
+
+        assert_eq!(cards_on_table(&state).len(), 0);
+        assert_eq!(
+            state.players.get(&player_1).unwrap().balance,
+            STARTING_BALANCE - SMALL_BLIND
+        );
+        assert_eq!(
+            state.players.get(&player_2).unwrap().balance,
+            STARTING_BALANCE - BIG_BLIND
+        );
+
+        accept_player_stake(&mut state, &player_1, 0, models::PlayAction::Call).unwrap();
+        assert_eq!(
+            state.players.get(&player_1).unwrap().balance,
+            STARTING_BALANCE - BIG_BLIND
+        );
+        accept_player_stake(
+            &mut state,
+            &player_2,
+            BIG_BLIND * 2,
+            models::PlayAction::RaiseTo,
+        )
+        .unwrap();
+        assert_eq!(
+            state.players.get(&player_2).unwrap().balance,
+            STARTING_BALANCE - 40
+        );
     }
 
     mod fixtures {
