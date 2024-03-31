@@ -11,7 +11,7 @@ pub type SharedState = Arc<RwLock<State>>;
 pub const STARTING_BALANCE: u64 = 1000;
 pub const SMALL_BLIND: u64 = 10;
 pub const BIG_BLIND: u64 = 20;
-pub const PLAYER_TURN_TIMEOUT_SECONDS: u64 = 10;
+pub const PLAYER_TURN_TIMEOUT_SECONDS: u64 = 30;
 pub const MAX_PLAYERS: usize = 8;
 
 #[derive(Default)]
@@ -30,6 +30,7 @@ pub struct Round {
     pub players_turn: Option<PlayerId>,
     pub dealer: Option<PlayerId>,
     pub raises: Vec<(PlayerId, u64)>,
+    pub calls: Vec<(PlayerId, u64)>,
 }
 
 #[derive(Clone)]
