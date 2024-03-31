@@ -6,14 +6,44 @@ pub(crate) fn spawn_game_worker(state: state::SharedState) {
     fn run_tasks(state: &state::SharedState) {
         let now = state::dt::Instant::default();
 
-        let current_player = {
+        let (last_update, current_player, status) = {
             let state = state.read().unwrap();
-            if state.status != state::GameStatus::Playing {
-                return;
-            }
+            let last_update = state.last_update.as_u64();
             let players_turn = state.round.players_turn.clone();
-            players_turn.and_then(|id| state.players.get(&id)).cloned()
+            let current_player = players_turn.and_then(|id| state.players.get(&id)).cloned();
+
+            (last_update, current_player, state.status)
         };
+
+        let now_ms: u64 = now.into();
+        let idle_ms = match status {
+            state::GameStatus::Joining => Some(state::GAME_IDLE_TIMEOUT_SECONDS * 1000),
+            state::GameStatus::Complete => Some(state::GAME_IDLE_TIMEOUT_SECONDS * 1000 * 4),
+            state::GameStatus::Playing => None,
+        };
+
+        if idle_ms.map_or(false, |idle_ms| now_ms - last_update > idle_ms) {
+            if let Ok("true") = std::env::var("KILL_ON_IDLE").as_deref() {
+                info!("KILL_ON_IDLE is set, exiting...");
+                // TODO: graceful shutdown
+                std::process::exit(0);
+            }
+
+            let mut state = state.write().unwrap();
+            if !state.round.deck.is_fresh() || state.status == state::GameStatus::Complete {
+                info!("Game idle timeout, resetting game");
+                *state = state::State::default();
+                state.last_update.set_now();
+            }
+        };
+
+        let now_ms: u64 = now.into();
+        if now_ms - last_update > state::GAME_IDLE_TIMEOUT_SECONDS * 1000 {
+            info!("Game idle timeout, resetting game");
+            let mut state = state.write().unwrap();
+            *state = state::State::default();
+            return;
+        }
 
         if let Some(player) = current_player {
             let expired = player.ttl.map(|ttl| ttl < now).unwrap_or(false);
@@ -25,6 +55,14 @@ pub(crate) fn spawn_game_worker(state: state::SharedState) {
 
                 // TODO: notify player, soft kick
                 state.players.remove(&player.id);
+                if state.players.len() < 2 {
+                    info!("Not enough players, pausing game until more players join");
+                    state.status = state::GameStatus::Joining;
+                    state.round = state::Round::default();
+                    for player in state.players.values_mut() {
+                        player.ttl = None;
+                    }
+                }
                 state.last_update.set_now();
             }
         }
@@ -426,6 +464,24 @@ fn payout_game_winners(state: &mut state::State) {
     let mut deduped_stakes = stakes.iter().map(|s| s.stake).collect::<Vec<_>>();
     deduped_stakes.dedup();
 
+    match stakes.len() {
+        1 => {
+            let winner = stakes.first().unwrap();
+            let player = state.players.get_mut(&winner.id).unwrap();
+            player.balance += round.pot;
+            info!(
+                "Player {} is the only player left, whole pot is won, pot: {}",
+                player.id, round.pot
+            );
+            return;
+        }
+        0 => {
+            info!("No players left, pot is lost");
+            return;
+        }
+        _ => {}
+    }
+
     let mut pots = vec![];
 
     deduped_stakes.insert(0, 0);
@@ -449,7 +505,7 @@ fn payout_game_winners(state: &mut state::State) {
             .skip_while(|(pot, players)| (*pot / players.len() as u64) < player.stake);
 
         if let Some((pot, _)) = pot.next() {
-            println!(
+            info!(
                 "Player {} folded, adding {} stake to pot of {}",
                 player.id, player.stake, pot
             );
@@ -500,18 +556,19 @@ fn payout_game_winners(state: &mut state::State) {
             .map(|p| p.id.clone().to_string())
             .collect::<Vec<_>>();
 
-        println!(
+        info!(
             "Paid out pot to winners. Pot: {}, Winner(s): {}",
             pot,
             winners.join(", "),
         );
     }
 
+    let pot_splits = pots.len().saturating_sub(1);
     let best_hand = scores.iter().map(|(_, score)| score.clone()).max().unwrap();
     info!(
         "Game complete, pot: {} ({} splits) (rank {:?}) cards: {:?}",
         round.pot,
-        pots.len() - 1,
+        pot_splits,
         best_hand.strength(),
         best_hand.cards()
     );
