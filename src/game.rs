@@ -159,7 +159,7 @@ pub(crate) fn accept_player_stake(
     Ok(())
 }
 
-fn player_stake_in_round(state: &state::State, player_id: &state::PlayerId) -> u64 {
+pub fn player_stake_in_round(state: &state::State, player_id: &state::PlayerId) -> u64 {
     let max_raise = state
         .round
         .raises
@@ -276,7 +276,7 @@ fn get_next_players_turn(
 
     // if call amount > 0, check if all players have reached equal
     // stakes in the current round. If so, end round.
-    if call_amount > 0 && !first_round {
+    if call_amount > 0 && (!first_round || first_round && state.round.raises.len() > 2) {
         let all_players_have_called = state
             .players
             .iter()
@@ -668,13 +668,17 @@ pub(crate) fn min_raise_to(state: &state::State) -> u64 {
         .chain(state.round.raises.iter().map(|(_, s)| *s))
         .collect();
 
-    let min_raise = raises
+    let max_raise = raises.iter().max().unwrap_or(&0);
+
+    let largest_raise_diff = raises
         .windows(2)
         .map(|w| w[1] - w[0])
-        .last()
-        .unwrap_or(state::BIG_BLIND);
+        .max()
+        .unwrap_or(0)
+        .max(BIG_BLIND);
 
-    min_raise
+    let min_raise_to = max_raise + largest_raise_diff;
+    min_raise_to
 }
 
 pub(crate) fn turn_expires_dt(state: &state::State, player_id: &state::PlayerId) -> Option<u64> {
@@ -928,6 +932,33 @@ mod tests {
 
         accept_player_stake(&mut state, &player_2, 200, models::PlayAction::Call).unwrap();
         assert_eq!(state.status, state::GameStatus::Complete);
+    }
+
+    #[test]
+    fn two_player_game_raising_round_one() {
+        let (mut state, (player_1, player_2)) =
+            fixtures::start_two_player_game(GameFixture::Round1);
+
+        assert_eq!(cards_on_table(&state).len(), 0);
+
+        accept_player_stake(
+            &mut state,
+            &player_1,
+            BIG_BLIND * 2,
+            models::PlayAction::RaiseTo,
+        )
+        .unwrap();
+
+        accept_player_stake(
+            &mut state,
+            &player_2,
+            BIG_BLIND * 3,
+            models::PlayAction::RaiseTo,
+        )
+        .unwrap();
+        accept_player_stake(&mut state, &player_1, 0, models::PlayAction::Call).unwrap();
+
+        assert_eq!(cards_on_table(&state).len(), 3);
     }
 
     mod fixtures {

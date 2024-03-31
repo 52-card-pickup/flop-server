@@ -58,7 +58,7 @@ pub(crate) async fn player(
         min_raise_to: game::min_raise_to(&state),
         turn_expires_dt: game::turn_expires_dt(&state, &player.id),
         last_update: state.last_update.into(),
-        current_round_stake: player.stake,
+        current_round_stake: game::player_stake_in_round(&state, &player.id),
     }))
 }
 
