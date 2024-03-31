@@ -160,6 +160,13 @@ pub(crate) fn accept_player_stake(
 }
 
 pub fn player_stake_in_round(state: &state::State, player_id: &state::PlayerId) -> u64 {
+    // check if player was last to raise, if so, return raise amount
+    if let Some((id, stake)) = state.round.raises.last() {
+        if id == player_id {
+            return *stake;
+        }
+    }
+
     let max_raise = state
         .round
         .raises
