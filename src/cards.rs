@@ -43,6 +43,9 @@ impl Deck {
     pub fn pop(&mut self) -> Option<Card> {
         self.0.pop()
     }
+    pub fn is_fresh(&self) -> bool {
+        self.0.len() == 52
+    }
 }
 
 impl Default for Deck {
