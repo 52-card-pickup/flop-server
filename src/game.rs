@@ -356,6 +356,7 @@ fn get_next_players_turn(
         state
             .players
             .iter()
+            .filter(|(_, player)| !player.folded)
             .skip_while(|(_, player)| player.folded)
             .next()
             .filter(|(_, player)| player_stake_in_round(state, &player.id) != call_amount)
