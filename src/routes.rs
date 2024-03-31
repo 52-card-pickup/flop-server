@@ -8,7 +8,7 @@ use aide::axum::{
     ApiRouter,
 };
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     Json,
 };
@@ -27,7 +27,12 @@ pub(crate) fn api_routes(state: state::SharedState) -> ApiRouter {
         .with_state(state)
 }
 
-pub(crate) async fn room(State(state): State<SharedState>) -> Json<models::GameClientRoom> {
+pub(crate) async fn room(
+    State(state): State<SharedState>,
+    Query(query): Query<models::PollQuery>,
+) -> Json<models::GameClientRoom> {
+    utils::wait_for_update(&state, query).await;
+
     let state = state.read().unwrap();
 
     let game_client_state = models::GameClientRoom {
@@ -36,7 +41,7 @@ pub(crate) async fn room(State(state): State<SharedState>) -> Json<models::GameC
         pot: state.round.pot,
         cards: game::cards_on_table(&state),
         completed: game::completed_game(&state),
-        last_update: state.last_update.into(),
+        last_update: state.last_update.as_u64(),
     };
 
     Json(game_client_state)
@@ -45,11 +50,14 @@ pub(crate) async fn room(State(state): State<SharedState>) -> Json<models::GameC
 pub(crate) async fn player(
     State(state): State<SharedState>,
     Path(player_id): Path<String>,
+    Query(query): Query<models::PollQuery>,
 ) -> JsonResult<models::GamePlayerState> {
-    let state = state.read().unwrap();
-    let player = validate_player(&player_id, &state)?;
+    utils::wait_for_update(&state, query).await;
 
-    Ok(Json(models::GamePlayerState {
+    let state = state.read().unwrap();
+    let player = utils::validate_player(&player_id, &state)?;
+
+    let game_player_state = models::GamePlayerState {
         state: game::game_phase(&state),
         balance: player.balance,
         cards: game::cards_in_hand(&state, &player.id),
@@ -57,9 +65,11 @@ pub(crate) async fn player(
         call_amount: game::call_amount(&state).unwrap_or(0),
         min_raise_by: game::min_raise_by(&state),
         turn_expires_dt: game::turn_expires_dt(&state, &player.id),
-        last_update: state.last_update.into(),
+        last_update: state.last_update.as_u64(),
         current_round_stake: player.stake,
-    }))
+    };
+
+    Ok(Json(game_player_state))
 }
 
 pub(crate) async fn play(
@@ -67,7 +77,7 @@ pub(crate) async fn play(
     Json(payload): Json<models::PlayRequest>,
 ) -> JsonResult<()> {
     let mut state = state.write().unwrap();
-    let player = validate_player(&payload.player_id, &state)?;
+    let player = utils::validate_player(&payload.player_id, &state)?;
     if let Err(err) = game::reset_ttl(&mut state, &player.id) {
         info!("Player {} failed to play: {}", payload.player_id, err);
         return Err(StatusCode::BAD_REQUEST);
@@ -114,6 +124,7 @@ pub(crate) async fn join(
     };
 
     state.last_update.set_now();
+
     info!("Player {} joined", id);
     Ok(Json(models::JoinResponse { id: id.to_string() }))
 }
@@ -127,6 +138,7 @@ pub(crate) async fn close_room(State(state): State<SharedState>) -> JsonResult<(
     })?;
 
     state.last_update.set_now();
+
     info!("Room closed for new players, game started");
     Ok(Json(()))
 }
@@ -137,19 +149,50 @@ pub(crate) async fn reset_room(State(state): State<SharedState>) -> Json<()> {
     *state = state::State::default();
 
     state.last_update.set_now();
+
     info!("Game reset");
     Json(())
 }
 
-fn validate_player(player_id: &str, state: &state::State) -> Result<state::Player, StatusCode> {
-    let player_id = player_id.parse().map_err(|_| {
-        info!("Player {} failed: invalid player id", player_id);
-        StatusCode::BAD_REQUEST
-    })?;
+mod utils {
+    use axum::http::StatusCode;
+    use tracing::info;
 
-    match state.players.get(&player_id) {
-        Some(player) => Ok(player.clone()),
-        None => Err(StatusCode::NOT_FOUND),
+    use crate::{models, state};
+
+    pub fn validate_player(
+        player_id: &str,
+        state: &state::State,
+    ) -> Result<state::Player, StatusCode> {
+        let player_id = player_id.parse().map_err(|_| {
+            info!("Player {} failed: invalid player id", player_id);
+            StatusCode::BAD_REQUEST
+        })?;
+
+        match state.players.get(&player_id) {
+            Some(player) => Ok(player.clone()),
+            None => Err(StatusCode::NOT_FOUND),
+        }
+    }
+
+    pub async fn wait_for_update(
+        state: &std::sync::Arc<std::sync::RwLock<state::State>>,
+        query: models::PollQuery,
+    ) {
+        if let Some(last_update) = query.since {
+            let rx = {
+                let state = state.read().unwrap();
+                state.last_update.wait_for(last_update.into())
+            };
+
+            let timeout_ms = query.timeout.unwrap_or(5_000);
+            let timeout = std::time::Duration::from_millis(timeout_ms);
+
+            tokio::select! {
+                _ = rx => {}
+                _ = tokio::time::sleep(timeout) => {}
+            }
+        }
     }
 }
 
