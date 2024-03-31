@@ -1,7 +1,4 @@
-use crate::{
-    cards, models,
-    state::{self, BIG_BLIND},
-};
+use crate::{cards, models, state};
 
 use tracing::info;
 
@@ -301,7 +298,7 @@ fn get_next_players_turn(
         let is_big_blind_first_round =
             current_player_id == state.players.keys().nth(1).unwrap() && first_round;
         let current_player_stake_is_call_amount =
-            player_stake_in_round(state, current_player_id) == BIG_BLIND;
+            player_stake_in_round(state, current_player_id) == state::BIG_BLIND;
         if is_big_blind_first_round && current_player_stake_is_call_amount {
             return None;
         }
@@ -683,7 +680,7 @@ pub(crate) fn min_raise_to(state: &state::State) -> u64 {
         .map(|w| w[1] - w[0])
         .max()
         .unwrap_or(0)
-        .max(BIG_BLIND);
+        .max(state::BIG_BLIND);
 
     let min_raise_to = max_raise + largest_raise_diff;
     min_raise_to
