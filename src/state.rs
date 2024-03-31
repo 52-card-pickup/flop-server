@@ -29,7 +29,6 @@ pub struct Round {
     pub deck: Deck,
     pub cards_on_table: Vec<Card>,
     pub players_turn: Option<PlayerId>,
-    pub dealer: Option<PlayerId>,
     pub raises: Vec<(PlayerId, u64)>,
 }
 
