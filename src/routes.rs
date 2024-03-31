@@ -1,5 +1,6 @@
 use crate::{
-    game, models,
+    game::{self, StateExt},
+    models,
     state::{self, SharedState},
 };
 
@@ -31,11 +32,11 @@ pub(crate) async fn room(State(state): State<SharedState>) -> Json<models::GameC
     let state = state.read().unwrap();
 
     let game_client_state = models::GameClientRoom {
-        state: game::game_phase(&state),
-        players: game::room_players(&state),
+        state: state.game_phase(),
+        players: state.room_players(),
         pot: state.round.pot,
-        cards: game::cards_on_table(&state),
-        completed: game::completed_game(&state),
+        cards: state.cards_on_table(),
+        completed: state.completed_game(),
         last_update: state.last_update.into(),
     };
 
@@ -49,17 +50,19 @@ pub(crate) async fn player(
     let state = state.read().unwrap();
     let player = validate_player(&player_id, &state)?;
 
-    Ok(Json(models::GamePlayerState {
-        state: game::game_phase(&state),
+    let game_player_state = models::GamePlayerState {
+        state: state.game_phase(),
         balance: player.balance,
-        cards: game::cards_in_hand(&state, &player.id),
+        cards: state.cards_in_hand(&player.id),
         your_turn: state.round.players_turn.as_ref() == Some(&player.id),
-        call_amount: game::call_amount(&state).unwrap_or(0),
-        min_raise_by: game::min_raise_by(&state),
-        turn_expires_dt: game::turn_expires_dt(&state, &player.id),
+        call_amount: state.call_amount().unwrap_or_else(|| 0),
+        min_raise_by: state.min_raise_by(),
+        turn_expires_dt: state.turn_expires_dt(&player.id),
         last_update: state.last_update.into(),
         current_round_stake: player.stake,
-    }))
+    };
+
+    Ok(Json(game_player_state))
 }
 
 pub(crate) async fn play(
@@ -68,6 +71,7 @@ pub(crate) async fn play(
 ) -> JsonResult<()> {
     let mut state = state.write().unwrap();
     let player = validate_player(&payload.player_id, &state)?;
+
     if let Err(err) = game::reset_ttl(&mut state, &player.id) {
         info!("Player {} failed to play: {}", payload.player_id, err);
         return Err(StatusCode::BAD_REQUEST);
@@ -78,13 +82,13 @@ pub(crate) async fn play(
         _ => game::accept_player_stake(&mut state, &player.id, payload.stake, payload.action),
     };
 
-    if let Err(err) = result {
+    result.map_err(|err| {
         info!(
             "Player {} tried to play, but failed: {}",
             payload.player_id, err
         );
-        return Err(StatusCode::BAD_REQUEST);
-    }
+        return StatusCode::BAD_REQUEST;
+    })?;
 
     state.last_update.set_now();
     info!("Player {} played round", payload.player_id);
@@ -105,13 +109,10 @@ pub(crate) async fn join(
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    let id = match game::add_new_player(&mut state, &payload.name) {
-        Ok(id) => id,
-        Err(err) => {
-            info!("Player failed to join: {}", err);
-            return Err(StatusCode::BAD_REQUEST);
-        }
-    };
+    let id = game::add_new_player(&mut state, &payload.name).map_err(|err| {
+        info!("Player failed to join: {}", err);
+        return StatusCode::BAD_REQUEST;
+    })?;
 
     state.last_update.set_now();
     info!("Player {} joined", id);
