@@ -724,19 +724,19 @@ mod tests {
 
         assert_eq!(cards_on_table(state).len(), 0);
 
-        accept_player_stake(state, &player_3, BIG_BLIND, P::Call).expect("R1-P3");
-        accept_player_stake(state, &player_4, BIG_BLIND, P::Call).expect("R1-P4");
-        accept_player_stake(state, &player_5, BIG_BLIND, P::Call).expect("R1-P5");
-        accept_player_stake(state, &player_1, SMALL_BLIND, P::Call).expect("R1-P1");
+        accept_player_stake(state, &player_3, 0, P::Call).expect("R1-P3");
+        accept_player_stake(state, &player_4, 0, P::Call).expect("R1-P4");
+        accept_player_stake(state, &player_5, 0, P::Call).expect("R1-P5");
+        accept_player_stake(state, &player_1, 0, P::Call).expect("R1-P1");
         accept_player_stake(state, &player_2, 0, P::Check).expect("R1-P2");
         assert_eq!(state.round.pot, 100);
         assert_eq!(cards_on_table(state).len(), 3);
 
         accept_player_stake(state, &player_1, 500, P::RaiseTo).expect("R2-P1");
         assert_eq!(state.round.pot, 600);
-        accept_player_stake(state, &player_2, 500, P::Call).expect("R2-P2");
+        accept_player_stake(state, &player_2, 0, P::Call).expect("R2-P2");
         assert_eq!(state.round.pot, 1100);
-        accept_player_stake(state, &player_3, 500, P::Call).expect("R2-P3");
+        accept_player_stake(state, &player_3, 0, P::Call).expect("R2-P3");
         assert_eq!(state.round.pot, 1600);
         fold_player(state, &player_4).expect("R2-P4");
         fold_player(state, &player_5).expect("R2-P4");
@@ -829,7 +829,7 @@ mod tests {
         assert_eq!(cards_on_table(&state).len(), 0);
         assert_eq!(state.round.pot, 30);
 
-        accept_player_stake(&mut state, &player_1, BIG_BLIND, P::Call).unwrap();
+        accept_player_stake(&mut state, &player_1, 0, P::Call).unwrap();
         fold_player(&mut state, &player_2).expect("R2-P2");
         assert_eq!(state.status, state::GameStatus::Complete);
         assert_eq!(state.round.pot, 0);
@@ -879,7 +879,7 @@ mod tests {
 
         assert_eq!(state.round.pot, 140);
 
-        accept_player_stake(&mut state, &player_2, BIG_BLIND * 3, P::Call).unwrap();
+        accept_player_stake(&mut state, &player_2, 0, P::Call).unwrap();
         assert_eq!(state.status, state::GameStatus::Complete);
     }
 
@@ -903,8 +903,8 @@ mod tests {
         assert_eq!(cards_on_table(&state).len(), 0);
         assert_eq!(state.round.pot, 30);
 
-        accept_player_stake(&mut state, &player_3, BIG_BLIND, models::PlayAction::Call).unwrap();
-        accept_player_stake(&mut state, &player_1, SMALL_BLIND, models::PlayAction::Call).unwrap();
+        accept_player_stake(&mut state, &player_3, 0, models::PlayAction::Call).unwrap();
+        accept_player_stake(&mut state, &player_1, 0, models::PlayAction::Call).unwrap();
         accept_player_stake(&mut state, &player_2, BIG_BLIND, models::PlayAction::Check).unwrap();
 
         assert_eq!(cards_on_table(&state).len(), 3);
@@ -927,15 +927,15 @@ mod tests {
         accept_player_stake(&mut state, &player_1, 100, models::PlayAction::RaiseTo).unwrap();
         assert_eq!(player_stake_in_round(&state, &player_1), 100);
 
-        accept_player_stake(&mut state, &player_2, 100, models::PlayAction::Call).unwrap();
+        accept_player_stake(&mut state, &player_2, 0, models::PlayAction::Call).unwrap();
         assert_eq!(player_stake_in_round(&state, &player_2), 100);
 
         accept_player_stake(&mut state, &player_3, 200, models::PlayAction::RaiseTo).unwrap();
         assert_eq!(player_stake_in_round(&state, &player_3), 200);
-        accept_player_stake(&mut state, &player_1, 100, models::PlayAction::Call).unwrap();
+        accept_player_stake(&mut state, &player_1, 0, models::PlayAction::Call).unwrap();
         assert_eq!(player_stake_in_round(&state, &player_1), 200);
 
-        accept_player_stake(&mut state, &player_2, 200, models::PlayAction::Call).unwrap();
+        accept_player_stake(&mut state, &player_2, 0, models::PlayAction::Call).unwrap();
         assert_eq!(state.status, state::GameStatus::Complete);
     }
 
@@ -1032,8 +1032,7 @@ mod tests {
 
             // assert pot balance on start is 30:
             assert_eq!(state.round.pot, 30);
-            accept_player_stake(&mut state, &player_1, SMALL_BLIND, models::PlayAction::Call)
-                .unwrap();
+            accept_player_stake(&mut state, &player_1, 0, models::PlayAction::Call).unwrap();
             assert_eq!(state.round.pot, 40);
             accept_player_stake(&mut state, &player_2, BIG_BLIND, models::PlayAction::Check)
                 .unwrap();
