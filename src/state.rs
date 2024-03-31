@@ -19,7 +19,7 @@ pub const MAX_PLAYERS: usize = 8;
 pub struct State {
     pub players: Players,
     pub round: Round,
-    pub last_update: dt::Instant,
+    pub last_update: dt::SignalInstant,
     pub status: GameStatus,
 }
 
@@ -82,7 +82,9 @@ mod id {
 pub mod dt {
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    pub use watch::SignalInstant;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
     pub struct Instant(u64);
 
     impl Instant {
@@ -108,9 +110,59 @@ pub mod dt {
         }
     }
 
+    impl From<u64> for Instant {
+        fn from(ms: u64) -> Self {
+            Self(ms)
+        }
+    }
+
     impl Default for Instant {
         fn default() -> Self {
             Instant(Self::now_ms())
+        }
+    }
+
+    pub mod watch {
+        use std::sync::{Arc, Mutex};
+
+        use tokio::sync::oneshot;
+
+        use super::Instant;
+
+        #[derive(Clone, Default)]
+        pub struct SignalInstant(
+            Instant,
+            Arc<Mutex<Vec<tokio::sync::oneshot::Sender<Instant>>>>,
+        );
+
+        impl SignalInstant {
+            pub fn as_u64(&self) -> u64 {
+                self.0.into()
+            }
+
+            pub fn set_now(&mut self) {
+                self.0.set_now();
+                let senders = {
+                    let mut senders = self.1.lock().unwrap();
+                    senders.drain(..).collect::<Vec<_>>()
+                };
+                for sender in senders {
+                    let _ = sender.send(self.0);
+                }
+            }
+
+            pub fn wait_for(&self, wait_until: Instant) -> oneshot::Receiver<Instant> {
+                let when = self.0;
+                let (sender, receiver) = oneshot::channel();
+
+                if when < wait_until {
+                    sender.send(when).unwrap();
+                } else {
+                    let mut senders = self.1.lock().unwrap();
+                    senders.push(sender);
+                }
+                receiver
+            }
         }
     }
 }

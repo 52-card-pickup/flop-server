@@ -31,6 +31,12 @@ pub(crate) enum PlayAction {
     Fold,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct PollQuery {
+    pub since: Option<u64>,
+    pub timeout: Option<u64>,
+}
+
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct GamePlayerState {

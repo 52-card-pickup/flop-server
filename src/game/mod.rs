@@ -13,7 +13,7 @@ pub(crate) fn spawn_game_worker(state: state::SharedState) {
 
         let (last_update, current_player, status) = {
             let state = state.read().unwrap();
-            let last_update: u64 = state.last_update.into();
+            let last_update = state.last_update.as_u64();
             let players_turn = state.round.players_turn.clone();
             let current_player = players_turn.and_then(|id| state.players.get(&id)).cloned();
 
@@ -42,6 +42,14 @@ pub(crate) fn spawn_game_worker(state: state::SharedState) {
             }
         };
 
+        let now_ms: u64 = now.into();
+        if now_ms - last_update > state::GAME_IDLE_TIMEOUT_SECONDS * 1000 {
+            info!("Game idle timeout, resetting game");
+            let mut state = state.write().unwrap();
+            *state = state::State::default();
+            return;
+        }
+
         if let Some(player) = current_player {
             let expired = player.ttl.map(|ttl| ttl < now).unwrap_or(false);
             if expired {
@@ -52,6 +60,14 @@ pub(crate) fn spawn_game_worker(state: state::SharedState) {
 
                 // TODO: notify player, soft kick
                 state.players.remove(&player.id);
+                if state.players.len() < 2 {
+                    info!("Not enough players, pausing game until more players join");
+                    state.status = state::GameStatus::Joining;
+                    state.round = state::Round::default();
+                    for player in state.players.values_mut() {
+                        player.ttl = None;
+                    }
+                }
                 state.last_update.set_now();
             }
         }
