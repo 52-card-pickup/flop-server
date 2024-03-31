@@ -1,6 +1,6 @@
 use tracing::info;
 
-use crate::{cards, models, state};
+use crate::{models, state};
 
 pub use state_ext::StateExt;
 
@@ -73,15 +73,15 @@ pub(crate) fn start_game(state: &mut state::State) -> Result<(), String> {
         return Err("Not enough players".to_string());
     }
 
-    state.round.cards_on_table.clear();
-    state.round.pot = 0;
-    round::reset_players(state);
-    round::next_turn(state);
     if state.status == state::GameStatus::Complete {
-        state.round.deck = cards::Deck::default();
+        round::deal_fresh_deck(state);
     }
 
+    state.round.pot = 0;
     state.status = state::GameStatus::Playing;
+
+    round::reset_players(state);
+    round::start_players_turn(state);
 
     Ok(())
 }
@@ -142,7 +142,7 @@ pub(crate) fn accept_player_stake(
         state.round.raises.push((player_id.clone(), player.stake));
     }
 
-    round::get_next_players_turn(state, player_id);
+    round::select_next_players_turn(state, player_id);
 
     if state.round.players_turn.is_none() {
         round::complete_round(state);
@@ -184,7 +184,7 @@ pub(crate) fn fold_player(
         _ => {}
     }
 
-    round::get_next_players_turn(state, player_id);
+    round::select_next_players_turn(state, player_id);
 
     if state.round.players_turn.is_none() {
         round::complete_round(state);
@@ -240,6 +240,7 @@ mod tests {
 
         assert_eq!(state.cards_on_table().len(), 0);
 
+        fixtures::print_current_player(state);
         accept_player_stake(state, &player_3, BIG_BLIND, P::Call).expect("R1-P3");
         accept_player_stake(state, &player_4, BIG_BLIND, P::Call).expect("R1-P4");
         accept_player_stake(state, &player_5, BIG_BLIND, P::Call).expect("R1-P5");
@@ -374,6 +375,15 @@ mod tests {
             start_game(&mut state).unwrap();
 
             (state, (player_1, player_2))
+        }
+
+        pub fn print_current_player(state: &state::State) {
+            if let Some(player_id) = &state.round.players_turn {
+                match state.players.get(player_id) {
+                    Some(player) => println!("Current player: {}", player.name),
+                    None => println!("Current player: <none>"),
+                }
+            }
         }
     }
 }

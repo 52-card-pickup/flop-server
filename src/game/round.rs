@@ -35,10 +35,10 @@ pub(crate) fn accept_blinds(
         .push((big_blind_player.id.clone(), big_blind_stake));
 }
 
-pub(crate) fn get_next_players_turn(
-    state: &state::State,
+pub(crate) fn select_next_players_turn(
+    state: &mut state::State,
     current_player_id: &state::PlayerId,
-) -> Option<state::PlayerId> {
+) {
     let target_stake = state
         .round
         .raises
@@ -61,7 +61,7 @@ pub(crate) fn get_next_players_turn(
         .next()
         .map(|(_, (id, _))| id.clone());
 
-    next_player.or_else(|| {
+    let next_player = next_player.or_else(|| {
         state
             .players
             .iter()
@@ -69,47 +69,49 @@ pub(crate) fn get_next_players_turn(
             .next()
             .filter(|(_, player)| player.stake < target_stake)
             .map(|(id, _)| id.clone())
-    })
+    });
+
+    set_next_player_turn(state, next_player.as_ref());
 }
 
-pub(crate) fn next_turn(state: &mut state::State) {
+pub(crate) fn start_players_turn(state: &mut state::State) {
     if state.players.len() < 2 {
         info!("Not enough players, pausing game");
         state.round.players_turn = None;
         return;
     }
-    let mut player_ids = state.players.keys().cloned().cycle();
-    let next_player_id = player_ids.next().unwrap();
 
     if state.round.cards_on_table.is_empty() {
+        let mut player_ids = state.players.keys().cloned().cycle();
+
         let small_blind_player = player_ids.next().unwrap();
         let big_blind_player = player_ids.next().unwrap();
+        let next_player_id = player_ids.next();
 
         info!(
             "Accepting blinds from players {} (sm) and {} (lg)",
             small_blind_player, big_blind_player
         );
         accept_blinds(state, small_blind_player, big_blind_player);
+        set_next_player_turn(state, next_player_id.as_ref());
+        return;
     }
 
-    let next_player = state.players.get_mut(&next_player_id).unwrap();
-    let mut expires = state::dt::Instant::default();
-    expires.add_seconds(state::PLAYER_TURN_TIMEOUT_SECONDS);
-    next_player.ttl = Some(expires);
-
-    state.round.players_turn = Some(next_player_id);
+    let mut player_ids = state.players.iter();
+    let next_player_id = player_ids.next().map(|(p, _)| p.clone());
+    set_next_player_turn(state, next_player_id.as_ref());
 }
 
 pub(crate) fn complete_round(state: &mut state::State) {
     match state.round.cards_on_table.len() {
         0 => {
             place_cards_on_table(state, 3);
-            next_turn(state);
+            start_players_turn(state);
             state.round.raises.clear();
         }
         3 | 4 => {
             place_cards_on_table(state, 1);
-            next_turn(state);
+            start_players_turn(state);
             state.round.raises.clear();
         }
         5 => {
@@ -142,6 +144,17 @@ pub(crate) fn reset_players(state: &mut state::State) {
         player.folded = false;
     }
     state.round.players_turn = None;
+}
+
+pub(crate) fn deal_fresh_deck(state: &mut state::State) {
+    state.round.deck = cards::Deck::default();
+    state.round.cards_on_table.clear();
+
+    for player in state.players.values_mut() {
+        let card_1 = state.round.deck.pop().unwrap();
+        let card_2 = state.round.deck.pop().unwrap();
+        player.cards = (card_1, card_2);
+    }
 }
 
 pub(crate) fn payout_game_winners(state: &mut state::State) {
@@ -294,4 +307,16 @@ pub(crate) fn validate_player_stake(
         models::PlayAction::Fold => unreachable!("Cannot handle fold action here"),
     };
     Ok(stake)
+}
+
+fn set_next_player_turn(state: &mut state::State, player_id: Option<&state::PlayerId>) {
+    let next_player = player_id.and_then(|p| state.players.get_mut(&p));
+
+    if let Some(next_player) = next_player {
+        let mut expires = state::dt::Instant::default();
+        expires.add_seconds(state::PLAYER_TURN_TIMEOUT_SECONDS);
+        next_player.ttl = Some(expires);
+    }
+
+    state.round.players_turn = player_id.cloned();
 }
