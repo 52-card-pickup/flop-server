@@ -63,10 +63,10 @@ pub(crate) async fn player(
         cards: game::cards_in_hand(&state, &player.id),
         your_turn: state.round.players_turn.as_ref() == Some(&player.id),
         call_amount: game::call_amount(&state).unwrap_or(0),
-        min_raise_by: game::min_raise_by(&state),
+        min_raise_to: game::min_raise_to(&state),
         turn_expires_dt: game::turn_expires_dt(&state, &player.id),
         last_update: state.last_update.as_u64(),
-        current_round_stake: player.stake,
+        current_round_stake: game::player_stake_in_round(&state, &player.id),
     };
 
     Ok(Json(game_player_state))

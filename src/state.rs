@@ -30,6 +30,7 @@ pub struct Round {
     pub cards_on_table: Vec<Card>,
     pub players_turn: Option<PlayerId>,
     pub raises: Vec<(PlayerId, u64)>,
+    pub calls: Vec<(PlayerId, u64)>,
 }
 
 #[derive(Clone)]
