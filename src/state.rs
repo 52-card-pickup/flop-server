@@ -52,6 +52,13 @@ pub enum GameStatus {
     Complete,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BetAction {
+    Check,
+    Call,
+    RaiseTo(u64),
+}
+
 mod id {
     use std::{fmt::Display, str::FromStr};
 

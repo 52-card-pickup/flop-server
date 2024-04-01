@@ -84,8 +84,18 @@ pub(crate) async fn play(
     }
 
     let result = match payload.action {
+        models::PlayAction::Check => {
+            game::accept_player_bet(&mut state, &player.id, state::BetAction::Check)
+        }
+        models::PlayAction::Call => {
+            game::accept_player_bet(&mut state, &player.id, state::BetAction::Call)
+        }
+        models::PlayAction::RaiseTo => game::accept_player_bet(
+            &mut state,
+            &player.id,
+            state::BetAction::RaiseTo(payload.stake),
+        ),
         models::PlayAction::Fold => game::fold_player(&mut state, &player.id),
-        _ => game::accept_player_stake(&mut state, &player.id, payload.stake, payload.action),
     };
 
     if let Err(err) = result {

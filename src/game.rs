@@ -123,17 +123,16 @@ pub(crate) fn add_new_player(
     Ok(player_id)
 }
 
-pub(crate) fn accept_player_stake(
+pub(crate) fn accept_player_bet(
     state: &mut state::State,
     player_id: &state::PlayerId,
-    stake: u64,
-    action: models::PlayAction,
+    action: state::BetAction,
 ) -> Result<(), String> {
     if state.round.players_turn.as_ref() != Some(player_id) {
         return Err("Not your turn".to_string());
     }
 
-    let stake = validate_player_stake(state, stake, player_id, &action)?;
+    let action = validate_bet_action(state, player_id, &action)?;
     let player_stake_in_round = player_stake_in_round(state, player_id);
     let min_raise_to = min_raise_to(state);
     let call = call_amount(state).unwrap_or(0);
@@ -144,14 +143,14 @@ pub(crate) fn accept_player_stake(
         .ok_or("Player not found".to_string())?;
 
     let (new_balance, pot_addition) = match action {
-        models::PlayAction::Check => {
+        state::BetAction::Check => {
             let call = call - player_stake_in_round;
             if call > 0 {
                 return Err("Cannot check, must call".to_string());
             }
             (player.balance, 0)
         }
-        models::PlayAction::Call => {
+        state::BetAction::Call => {
             let call = call - player_stake_in_round;
             state.round.calls.push((player_id.clone(), call));
             let new_balance = player
@@ -160,19 +159,18 @@ pub(crate) fn accept_player_stake(
                 .ok_or("Not enough balance".to_string())?;
             (new_balance, call)
         }
-        models::PlayAction::RaiseTo => {
-            if stake < min_raise_to {
+        state::BetAction::RaiseTo(raise_to) => {
+            if raise_to < min_raise_to {
                 return Err(format!("Raise must be at least {}", min_raise_to));
             }
-            state.round.raises.push((player_id.clone(), stake));
-            let pot_addition = stake - player_stake_in_round;
+            state.round.raises.push((player_id.clone(), raise_to));
+            let pot_addition = raise_to - player_stake_in_round;
             let new_balance = player
                 .balance
                 .checked_sub(pot_addition)
                 .ok_or("Not enough balance".to_string())?;
             (new_balance, pot_addition)
         }
-        models::PlayAction::Fold => unreachable!("Cannot handle fold action here"),
     };
 
     player.balance = new_balance;
@@ -355,41 +353,39 @@ fn get_next_players_turn(
     })
 }
 
-fn validate_player_stake(
+fn validate_bet_action(
     state: &mut state::State,
-    stake: u64,
     player_id: &state::PlayerId,
-    action: &models::PlayAction,
-) -> Result<u64, String> {
+    action: &state::BetAction,
+) -> Result<state::BetAction, String> {
     let last_raise = state.round.raises.last().map(|(_, s)| *s).unwrap_or(0);
     let player_stake_in_round = player_stake_in_round(state, player_id);
     let stake = match action {
-        models::PlayAction::Check
+        state::BetAction::Check
             if !state.round.raises.is_empty() && player_stake_in_round != last_raise =>
         {
             return Err("Cannot check after a raise".to_string());
         }
-        models::PlayAction::RaiseTo if stake == 0 => {
+        state::BetAction::RaiseTo(raise_to) if *raise_to == 0 => {
             return Err("Stake cannot be 0 for raise".to_string())
         }
-        models::PlayAction::Check => 0,
-        models::PlayAction::RaiseTo => {
+        state::BetAction::Check => state::BetAction::Check,
+        state::BetAction::RaiseTo(raise_to) => {
             let call_amount = call_amount(state).unwrap_or(0);
             let min_raise_to = min_raise_to(state);
             let min_raise = call_amount.max(min_raise_to);
-            if stake < min_raise {
+            if *raise_to < min_raise {
                 return Err(format!("Raise must be at least {}", min_raise));
             }
-            stake
+            state::BetAction::RaiseTo(*raise_to)
         }
-        models::PlayAction::Call => {
+        state::BetAction::Call => {
             let call = call_amount(state).ok_or("No bets to call".to_string())?;
             if player_stake_in_round >= call {
                 return Err("Cannot call, already called".to_string());
             }
-            0
+            state::BetAction::Call
         }
-        models::PlayAction::Fold => unreachable!("Cannot handle fold action here"),
     };
     Ok(stake)
 }
@@ -749,6 +745,7 @@ mod tests {
         game::tests::fixtures::GameFixture,
         state::{BIG_BLIND, SMALL_BLIND, STARTING_BALANCE},
     };
+    use state::BetAction as P;
 
     #[test]
     fn two_player_game_deals_correct_cards_to_table() {
@@ -767,8 +764,6 @@ mod tests {
 
     #[test]
     fn game_pays_outright_winner_from_pot() {
-        use models::PlayAction as P;
-
         let mut state = state::State::default();
         let state = &mut state;
         state.round.deck = cards::Deck::ordered();
@@ -788,28 +783,28 @@ mod tests {
 
         assert_eq!(cards_on_table(state).len(), 0);
 
-        accept_player_stake(state, &player_3, 0, P::Call).expect("R1-P3");
-        accept_player_stake(state, &player_4, 0, P::Call).expect("R1-P4");
-        accept_player_stake(state, &player_5, 0, P::Call).expect("R1-P5");
-        accept_player_stake(state, &player_1, 0, P::Call).expect("R1-P1");
-        accept_player_stake(state, &player_2, 0, P::Check).expect("R1-P2");
+        accept_player_bet(state, &player_3, P::Call).expect("R1-P3");
+        accept_player_bet(state, &player_4, P::Call).expect("R1-P4");
+        accept_player_bet(state, &player_5, P::Call).expect("R1-P5");
+        accept_player_bet(state, &player_1, P::Call).expect("R1-P1");
+        accept_player_bet(state, &player_2, P::Check).expect("R1-P2");
         assert_eq!(state.round.pot, 100);
         assert_eq!(cards_on_table(state).len(), 3);
 
-        accept_player_stake(state, &player_1, 500, P::RaiseTo).expect("R2-P1");
+        accept_player_bet(state, &player_1, P::RaiseTo(500)).expect("R2-P1");
         assert_eq!(state.round.pot, 600);
-        accept_player_stake(state, &player_2, 0, P::Call).expect("R2-P2");
+        accept_player_bet(state, &player_2, P::Call).expect("R2-P2");
         assert_eq!(state.round.pot, 1100);
-        accept_player_stake(state, &player_3, 0, P::Call).expect("R2-P3");
+        accept_player_bet(state, &player_3, P::Call).expect("R2-P3");
         assert_eq!(state.round.pot, 1600);
         fold_player(state, &player_4).expect("R2-P4");
         fold_player(state, &player_5).expect("R2-P4");
 
         assert_eq!(cards_on_table(state).len(), 4);
 
-        accept_player_stake(state, &player_1, 0, P::Check).unwrap();
-        accept_player_stake(state, &player_2, 0, P::Check).unwrap();
-        accept_player_stake(state, &player_3, 0, P::Check).unwrap();
+        accept_player_bet(state, &player_1, P::Check).unwrap();
+        accept_player_bet(state, &player_2, P::Check).unwrap();
+        accept_player_bet(state, &player_3, P::Check).unwrap();
 
         let pot_before_payout = state.round.pot;
         let winner_balance_before_payout = state.players.get(&player_1).unwrap().balance;
@@ -817,9 +812,9 @@ mod tests {
         assert_eq!(pot_before_payout, (BIG_BLIND * 5) + (500 * 3));
         assert_eq!(cards_on_table(state).len(), 5);
 
-        accept_player_stake(state, &player_1, 0, P::Check).unwrap();
-        accept_player_stake(state, &player_2, 0, P::Check).unwrap();
-        accept_player_stake(state, &player_3, 0, P::Check).unwrap();
+        accept_player_bet(state, &player_1, P::Check).unwrap();
+        accept_player_bet(state, &player_2, P::Check).unwrap();
+        accept_player_bet(state, &player_3, P::Check).unwrap();
 
         assert_eq!(cards_on_table(state).len(), 5);
         assert_eq!(state.status, state::GameStatus::Complete);
@@ -886,14 +881,12 @@ mod tests {
 
     #[test]
     fn two_player_game_fold_on_big_blind() {
-        use models::PlayAction as P;
-
         let (mut state, (player_1, player_2)) =
             fixtures::start_two_player_game(GameFixture::Round1);
         assert_eq!(cards_on_table(&state).len(), 0);
         assert_eq!(state.round.pot, 30);
 
-        accept_player_stake(&mut state, &player_1, 0, P::Call).unwrap();
+        accept_player_bet(&mut state, &player_1, P::Call).unwrap();
         fold_player(&mut state, &player_2).expect("R2-P2");
         assert_eq!(state.status, state::GameStatus::Complete);
         assert_eq!(state.round.pot, 0);
@@ -919,23 +912,21 @@ mod tests {
 
     #[test]
     fn two_player_game_reraising_minimum_works() {
-        use models::PlayAction as P;
-
         let (mut state, (player_1, player_2)) =
             fixtures::start_two_player_game(GameFixture::Round4);
         assert_eq!(state.round.pot, 40);
-        accept_player_stake(&mut state, &player_1, BIG_BLIND, P::RaiseTo).unwrap();
+        accept_player_bet(&mut state, &player_1, P::RaiseTo(BIG_BLIND)).unwrap();
         assert_eq!(state.status, state::GameStatus::Playing);
         assert_eq!(state.round.pot, 60);
         assert_eq!(state.players.get(&player_1).unwrap().stake, BIG_BLIND * 2);
         assert_eq!(state.players.get(&player_2).unwrap().stake, BIG_BLIND);
 
-        accept_player_stake(&mut state, &player_2, BIG_BLIND * 2, P::RaiseTo).unwrap();
+        accept_player_bet(&mut state, &player_2, P::RaiseTo(BIG_BLIND * 2)).unwrap();
         assert_eq!(state.round.pot, 100);
         assert_eq!(state.players.get(&player_1).unwrap().stake, BIG_BLIND * 2);
         assert_eq!(state.players.get(&player_2).unwrap().stake, BIG_BLIND * 3);
 
-        accept_player_stake(&mut state, &player_1, BIG_BLIND * 3, P::RaiseTo).unwrap();
+        accept_player_bet(&mut state, &player_1, P::RaiseTo(BIG_BLIND * 3)).unwrap();
         assert_eq!(state.players.get(&player_1).unwrap().stake, BIG_BLIND * 4);
         assert_eq!(state.players.get(&player_2).unwrap().stake, BIG_BLIND * 3);
 
@@ -943,7 +934,7 @@ mod tests {
 
         assert_eq!(state.round.pot, 140);
 
-        accept_player_stake(&mut state, &player_2, 0, P::Call).unwrap();
+        accept_player_bet(&mut state, &player_2, P::Call).unwrap();
         assert_eq!(state.status, state::GameStatus::Complete);
     }
 
@@ -967,39 +958,39 @@ mod tests {
         assert_eq!(cards_on_table(&state).len(), 0);
         assert_eq!(state.round.pot, 30);
 
-        accept_player_stake(&mut state, &player_3, 0, models::PlayAction::Call).unwrap();
-        accept_player_stake(&mut state, &player_1, 0, models::PlayAction::Call).unwrap();
-        accept_player_stake(&mut state, &player_2, BIG_BLIND, models::PlayAction::Check).unwrap();
+        accept_player_bet(&mut state, &player_3, P::Call).unwrap();
+        accept_player_bet(&mut state, &player_1, P::Call).unwrap();
+        accept_player_bet(&mut state, &player_2, P::Check).unwrap();
 
         assert_eq!(cards_on_table(&state).len(), 3);
         assert_eq!(state.round.pot, 60);
 
-        accept_player_stake(&mut state, &player_1, 0, models::PlayAction::Check).unwrap();
-        accept_player_stake(&mut state, &player_2, 0, models::PlayAction::Check).unwrap();
-        accept_player_stake(&mut state, &player_3, 0, models::PlayAction::Check).unwrap();
+        accept_player_bet(&mut state, &player_1, P::Check).unwrap();
+        accept_player_bet(&mut state, &player_2, P::Check).unwrap();
+        accept_player_bet(&mut state, &player_3, P::Check).unwrap();
 
         assert_eq!(cards_on_table(&state).len(), 4);
         assert_eq!(state.round.pot, 60);
 
-        accept_player_stake(&mut state, &player_1, 0, models::PlayAction::Check).unwrap();
-        accept_player_stake(&mut state, &player_2, 0, models::PlayAction::Check).unwrap();
-        accept_player_stake(&mut state, &player_3, 0, models::PlayAction::Check).unwrap();
+        accept_player_bet(&mut state, &player_1, P::Check).unwrap();
+        accept_player_bet(&mut state, &player_2, P::Check).unwrap();
+        accept_player_bet(&mut state, &player_3, P::Check).unwrap();
 
         assert_eq!(cards_on_table(&state).len(), 5);
         assert_eq!(state.round.pot, 60);
 
-        accept_player_stake(&mut state, &player_1, 100, models::PlayAction::RaiseTo).unwrap();
+        accept_player_bet(&mut state, &player_1, P::RaiseTo(100)).unwrap();
         assert_eq!(player_stake_in_round(&state, &player_1), 100);
 
-        accept_player_stake(&mut state, &player_2, 0, models::PlayAction::Call).unwrap();
+        accept_player_bet(&mut state, &player_2, P::Call).unwrap();
         assert_eq!(player_stake_in_round(&state, &player_2), 100);
 
-        accept_player_stake(&mut state, &player_3, 200, models::PlayAction::RaiseTo).unwrap();
+        accept_player_bet(&mut state, &player_3, P::RaiseTo(200)).unwrap();
         assert_eq!(player_stake_in_round(&state, &player_3), 200);
-        accept_player_stake(&mut state, &player_1, 0, models::PlayAction::Call).unwrap();
+        accept_player_bet(&mut state, &player_1, P::Call).unwrap();
         assert_eq!(player_stake_in_round(&state, &player_1), 200);
 
-        accept_player_stake(&mut state, &player_2, 0, models::PlayAction::Call).unwrap();
+        accept_player_bet(&mut state, &player_2, P::Call).unwrap();
         assert_eq!(state.status, state::GameStatus::Complete);
     }
 
@@ -1010,22 +1001,10 @@ mod tests {
 
         assert_eq!(cards_on_table(&state).len(), 0);
 
-        accept_player_stake(
-            &mut state,
-            &player_1,
-            BIG_BLIND * 2,
-            models::PlayAction::RaiseTo,
-        )
-        .unwrap();
+        accept_player_bet(&mut state, &player_1, P::RaiseTo(BIG_BLIND * 2)).unwrap();
 
-        accept_player_stake(
-            &mut state,
-            &player_2,
-            BIG_BLIND * 3,
-            models::PlayAction::RaiseTo,
-        )
-        .unwrap();
-        accept_player_stake(&mut state, &player_1, 0, models::PlayAction::Call).unwrap();
+        accept_player_bet(&mut state, &player_2, P::RaiseTo(BIG_BLIND * 3)).unwrap();
+        accept_player_bet(&mut state, &player_1, P::Call).unwrap();
 
         assert_eq!(cards_on_table(&state).len(), 3);
     }
@@ -1045,18 +1024,12 @@ mod tests {
             STARTING_BALANCE - BIG_BLIND
         );
 
-        accept_player_stake(&mut state, &player_1, 0, models::PlayAction::Call).unwrap();
+        accept_player_bet(&mut state, &player_1, P::Call).unwrap();
         assert_eq!(
             state.players.get(&player_1).unwrap().balance,
             STARTING_BALANCE - BIG_BLIND
         );
-        accept_player_stake(
-            &mut state,
-            &player_2,
-            BIG_BLIND * 2,
-            models::PlayAction::RaiseTo,
-        )
-        .unwrap();
+        accept_player_bet(&mut state, &player_2, P::RaiseTo(BIG_BLIND * 2)).unwrap();
         assert_eq!(
             state.players.get(&player_2).unwrap().balance,
             STARTING_BALANCE - 40
@@ -1096,25 +1069,24 @@ mod tests {
 
             // assert pot balance on start is 30:
             assert_eq!(state.round.pot, 30);
-            accept_player_stake(&mut state, &player_1, 0, models::PlayAction::Call).unwrap();
+            accept_player_bet(&mut state, &player_1, P::Call).unwrap();
             assert_eq!(state.round.pot, 40);
-            accept_player_stake(&mut state, &player_2, BIG_BLIND, models::PlayAction::Check)
-                .unwrap();
+            accept_player_bet(&mut state, &player_2, P::Check).unwrap();
             assert_eq!(state.round.pot, 40);
             assert_eq!(cards_on_table(&state).len(), 3);
             if game_fixture == GameFixture::Round2 {
                 return (state, (player_1, player_2));
             }
 
-            accept_player_stake(&mut state, &player_1, 0, models::PlayAction::Check).unwrap();
-            accept_player_stake(&mut state, &player_2, 0, models::PlayAction::Check).unwrap();
+            accept_player_bet(&mut state, &player_1, P::Check).unwrap();
+            accept_player_bet(&mut state, &player_2, P::Check).unwrap();
             assert_eq!(cards_on_table(&state).len(), 4);
             if game_fixture == GameFixture::Round3 {
                 return (state, (player_1, player_2));
             }
 
-            accept_player_stake(&mut state, &player_1, 0, models::PlayAction::Check).unwrap();
-            accept_player_stake(&mut state, &player_2, 0, models::PlayAction::Check).unwrap();
+            accept_player_bet(&mut state, &player_1, P::Check).unwrap();
+            accept_player_bet(&mut state, &player_2, P::Check).unwrap();
 
             assert_eq!(cards_on_table(&state).len(), 5);
             if game_fixture == GameFixture::Round4 {
