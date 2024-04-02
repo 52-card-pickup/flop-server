@@ -30,8 +30,8 @@ pub(crate) fn api_routes(state: state::SharedState) -> ApiRouter {
 pub(crate) async fn room(
     State(state): State<SharedState>,
     Query(query): Query<models::PollQuery>,
-) -> Json<models::GameClientRoom> {
-    utils::wait_for_update(&state, query).await;
+) -> JsonResult<models::GameClientRoom> {
+    utils::wait_for_update(&state, query, None).await?;
 
     let state = state.read().unwrap();
 
@@ -44,7 +44,7 @@ pub(crate) async fn room(
         last_update: state.last_update.as_u64(),
     };
 
-    Json(game_client_state)
+    Ok(Json(game_client_state))
 }
 
 pub(crate) async fn player(
@@ -52,7 +52,7 @@ pub(crate) async fn player(
     Path(player_id): Path<String>,
     Query(query): Query<models::PollQuery>,
 ) -> JsonResult<models::GamePlayerState> {
-    utils::wait_for_update(&state, query).await;
+    utils::wait_for_update(&state, query, Some(&player_id)).await?;
 
     let state = state.read().unwrap();
     let player = utils::validate_player(&player_id, &state)?;
@@ -188,10 +188,14 @@ mod utils {
     pub async fn wait_for_update(
         state: &std::sync::Arc<std::sync::RwLock<state::State>>,
         query: models::PollQuery,
-    ) {
+        player_id: Option<&str>,
+    ) -> Result<(), StatusCode> {
         if let Some(last_update) = query.since {
             let rx = {
                 let state = state.read().unwrap();
+                if let Some(player_id) = player_id {
+                    validate_player(&player_id, &state)?;
+                }
                 state.last_update.wait_for(last_update.into())
             };
 
@@ -203,6 +207,7 @@ mod utils {
                 _ = tokio::time::sleep(timeout) => {}
             }
         }
+        Ok(())
     }
 }
 

@@ -1,6 +1,6 @@
 use crate::{cards, models, state};
 
-use tracing::info;
+use tracing::{info, warn};
 
 pub(crate) fn spawn_game_worker(state: state::SharedState) {
     fn run_tasks(state: &state::SharedState) {
@@ -90,6 +90,11 @@ pub(crate) fn start_game(state: &mut state::State) -> Result<(), String> {
     next_turn(state, None);
     if state.status == state::GameStatus::Complete {
         state.round.deck = cards::Deck::default();
+        for player in state.players.values_mut() {
+            let card_1 = state.round.deck.pop().unwrap();
+            let card_2 = state.round.deck.pop().unwrap();
+            player.cards = (card_1, card_2);
+        }
     }
 
     state.status = state::GameStatus::Playing;
@@ -501,6 +506,13 @@ fn payout_game_winners(state: &mut state::State) {
         }
     }
 
+    if round.cards_on_table.len() < 3 {
+        //TODO: handle case better
+        warn!("Not enough cards to evaluate hand, completing game");
+        round.pot = 0;
+        return;
+    }
+
     let mut scores: Vec<_> = state
         .players
         .values_mut()
@@ -600,6 +612,11 @@ pub(crate) fn game_phase(state: &state::State) -> models::GamePhase {
 
 pub(crate) fn completed_game(state: &state::State) -> Option<models::CompletedGame> {
     if state.status != state::GameStatus::Complete {
+        return None;
+    }
+    let players_remaining = state.players.iter().filter(|(_, p)| !p.folded).count();
+    if players_remaining < 2 {
+        // TODO: handle case where game ended early due to players folding/leaving
         return None;
     }
     let (winner, winning_hand) = state
