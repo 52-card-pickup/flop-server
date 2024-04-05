@@ -33,7 +33,7 @@ pub(crate) async fn room(
 ) -> Json<models::GameClientRoom> {
     utils::wait_for_update(&state, query).await;
 
-    let state = state.read().unwrap();
+    let state = state.read().await;
 
     let game_client_state = models::GameClientRoom {
         state: game::game_phase(&state),
@@ -54,7 +54,7 @@ pub(crate) async fn player(
 ) -> JsonResult<models::GamePlayerState> {
     utils::wait_for_update(&state, query).await;
 
-    let state = state.read().unwrap();
+    let state = state.read().await;
     let player = utils::validate_player(&player_id, &state)?;
 
     let game_player_state = models::GamePlayerState {
@@ -76,7 +76,7 @@ pub(crate) async fn play(
     State(state): State<SharedState>,
     Json(payload): Json<models::PlayRequest>,
 ) -> JsonResult<()> {
-    let mut state = state.write().unwrap();
+    let mut state = state.write().await;
     let player = utils::validate_player(&payload.player_id, &state)?;
     if let Err(err) = game::reset_ttl(&mut state, &player.id) {
         info!("Player {} failed to play: {}", payload.player_id, err);
@@ -115,7 +115,7 @@ pub(crate) async fn join(
     State(state): State<SharedState>,
     Json(payload): Json<models::JoinRequest>,
 ) -> JsonResult<models::JoinResponse> {
-    let mut state = state.write().unwrap();
+    let mut state = state.write().await;
 
     if payload.name.is_empty()
         || payload.name.len() > 20
@@ -140,7 +140,7 @@ pub(crate) async fn join(
 }
 
 pub(crate) async fn close_room(State(state): State<SharedState>) -> JsonResult<()> {
-    let mut state = state.write().unwrap();
+    let mut state = state.write().await;
 
     game::start_game(&mut state).map_err(|err| {
         info!("Failed to close room: {}", err);
@@ -154,7 +154,7 @@ pub(crate) async fn close_room(State(state): State<SharedState>) -> JsonResult<(
 }
 
 pub(crate) async fn reset_room(State(state): State<SharedState>) -> Json<()> {
-    let mut state = state.write().unwrap();
+    let mut state = state.write().await;
 
     *state = state::State::default();
 
@@ -168,7 +168,10 @@ mod utils {
     use axum::http::StatusCode;
     use tracing::info;
 
-    use crate::{models, state};
+    use crate::{
+        models,
+        state::{self, SharedState},
+    };
 
     pub fn validate_player(
         player_id: &str,
@@ -185,13 +188,10 @@ mod utils {
         }
     }
 
-    pub async fn wait_for_update(
-        state: &std::sync::Arc<std::sync::RwLock<state::State>>,
-        query: models::PollQuery,
-    ) {
+    pub async fn wait_for_update(state: &SharedState, query: models::PollQuery) {
         if let Some(last_update) = query.since {
             let rx = {
-                let state = state.read().unwrap();
+                let state = state.read().await;
                 state.last_update.wait_for(last_update.into())
             };
 

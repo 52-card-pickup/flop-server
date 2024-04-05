@@ -1,8 +1,9 @@
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use crate::cards::{Card, Deck};
 
 pub use id::PlayerId;
+use tokio::sync::RwLock;
 
 use self::players::Players;
 
@@ -150,26 +151,58 @@ pub mod dt {
 
             pub fn set_now(&mut self) {
                 self.0.set_now();
-                let senders = {
-                    let mut senders = self.1.lock().unwrap();
-                    senders.drain(..).collect::<Vec<_>>()
-                };
-                for sender in senders {
+                let mut senders = self.1.lock().unwrap();
+                for sender in senders.drain(..) {
                     let _ = sender.send(self.0);
                 }
             }
 
-            pub fn wait_for(&self, wait_until: Instant) -> oneshot::Receiver<Instant> {
-                let when = self.0;
-                let (sender, receiver) = oneshot::channel();
+            pub fn wait_for(&self, since: Instant) -> impl std::future::Future<Output = Instant> {
+                let receiver = match self.try_wait_for(since) {
+                    Some(receiver) => receiver,
+                    None => {
+                        let (sender, receiver) = oneshot::channel();
+                        sender.send(self.0).unwrap();
+                        receiver
+                    }
+                };
+                async move { receiver.await.unwrap() }
+            }
 
-                if when < wait_until {
-                    sender.send(when).unwrap();
-                } else {
-                    let mut senders = self.1.lock().unwrap();
-                    senders.push(sender);
+            pub fn try_wait_for(&self, since: Instant) -> Option<oneshot::Receiver<Instant>> {
+                let when = self.0;
+                if when > since {
+                    return None;
                 }
-                receiver
+
+                let (sender, receiver) = oneshot::channel();
+                let mut senders = self.1.lock().unwrap();
+                senders.push(sender);
+                Some(receiver)
+            }
+        }
+
+        #[cfg(test)]
+        mod tests {
+            use super::*;
+
+            #[test]
+            fn signal_instant_returns_instantly_if_changed() {
+                let signal = SignalInstant::default();
+                let now = signal.as_u64();
+                let before = now - 1000;
+                let receiver = signal.try_wait_for(Instant(before));
+
+                assert!(receiver.is_none());
+            }
+
+            #[test]
+            fn signal_instant_waits_for_change_if_not_changed() {
+                let signal = SignalInstant::default();
+                let now = signal.as_u64();
+                let receiver = signal.try_wait_for(Instant(now));
+
+                assert!(receiver.is_some());
             }
         }
     }

@@ -3,11 +3,11 @@ use crate::{cards, models, state};
 use tracing::info;
 
 pub(crate) fn spawn_game_worker(state: state::SharedState) {
-    fn run_tasks(state: &state::SharedState) {
+    async fn run_tasks(state: &state::SharedState) {
         let now = state::dt::Instant::default();
 
         let (last_update, current_player, status) = {
-            let state = state.read().unwrap();
+            let state = state.read().await;
             let last_update = state.last_update.as_u64();
             let players_turn = state.round.players_turn.clone();
             let current_player = players_turn.and_then(|id| state.players.get(&id)).cloned();
@@ -29,7 +29,7 @@ pub(crate) fn spawn_game_worker(state: state::SharedState) {
                 std::process::exit(0);
             }
 
-            let mut state = state.write().unwrap();
+            let mut state = state.write().await;
             if !state.round.deck.is_fresh() || state.status == state::GameStatus::Complete {
                 info!("Game idle timeout, resetting game");
                 *state = state::State::default();
@@ -40,7 +40,7 @@ pub(crate) fn spawn_game_worker(state: state::SharedState) {
         let now_ms: u64 = now.into();
         if now_ms - last_update > state::GAME_IDLE_TIMEOUT_SECONDS * 1000 {
             info!("Game idle timeout, resetting game");
-            let mut state = state.write().unwrap();
+            let mut state = state.write().await;
             *state = state::State::default();
             return;
         }
@@ -49,7 +49,7 @@ pub(crate) fn spawn_game_worker(state: state::SharedState) {
             let expired = player.ttl.map(|ttl| ttl < now).unwrap_or(false);
             if expired {
                 info!("Player {} turn expired", player.id);
-                let mut state = state.write().unwrap();
+                let mut state = state.write().await;
 
                 fold_player(&mut state, &player.id).unwrap();
 
@@ -71,7 +71,7 @@ pub(crate) fn spawn_game_worker(state: state::SharedState) {
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-            run_tasks(&state);
+            run_tasks(&state).await;
         }
     });
 }
