@@ -21,6 +21,7 @@ pub(crate) fn api_routes(state: state::SharedState) -> ApiRouter {
         .api_route("/room", get_with(room, docs::room))
         .api_route("/room/close", post_with(close_room, docs::close_room))
         .api_route("/room/reset", post_with(reset_room, docs::reset_room))
+        .api_route("/room/knock", post_with(knock_room, docs::knock_room))
         .api_route("/player/:player_id", get_with(player, docs::player))
         .api_route("/join", post_with(join, docs::join))
         .api_route("/play", post_with(play, docs::play))
@@ -164,6 +165,57 @@ pub(crate) async fn reset_room(State(state): State<SharedState>) -> Json<()> {
     Json(())
 }
 
+pub(crate) async fn knock_room(
+    State(state): State<SharedState>,
+    Json(payload): Json<models::KnockRequest>,
+) -> JsonResult<models::KnockResponse> {
+    let response = match payload.which {
+        models::KnockAction::Peek => {
+            let state = state.read().unwrap();
+            models::KnockResponse {
+                state: game::game_phase(&state),
+                cards_on_table: state.round.cards_on_table.len(),
+                players: state.players.len(),
+                retry_at: None,
+            }
+        }
+        models::KnockAction::Nudge => {
+            let mut state = state.write().unwrap();
+            let now = state::dt::Instant::default();
+            let expiry = {
+                let mut when = now.clone();
+                when.add_seconds(30);
+                when
+            };
+            state.round.knocks.nudges.push_back(expiry);
+            models::KnockResponse {
+                state: game::game_phase(&state),
+                cards_on_table: state.round.cards_on_table.len(),
+                players: state.players.len(),
+                retry_at: None,
+            }
+        }
+        models::KnockAction::Kick => {
+            let mut state = state.write().unwrap();
+            let now = state::dt::Instant::default();
+            let expiry = {
+                let mut when = now.clone();
+                when.add_seconds(60);
+                when
+            };
+            state.round.knocks.kicks.push_back(expiry);
+            models::KnockResponse {
+                state: game::game_phase(&state),
+                cards_on_table: state.round.cards_on_table.len(),
+                players: state.players.len(),
+                retry_at: Some(expiry.into()),
+            }
+        }
+    };
+    info!("Room knocked on: action = {:?}", payload.which);
+    Ok(Json(response))
+}
+
 mod utils {
     use axum::http::StatusCode;
     use tracing::info;
@@ -231,5 +283,9 @@ pub mod docs {
 
     pub fn reset_room(op: TransformOperation) -> TransformOperation {
         op.description("Reset the game room.")
+    }
+
+    pub fn knock_room(op: TransformOperation) -> TransformOperation {
+        op.description("Knock on the game room - peek in, nudge players, or kick them out.")
     }
 }

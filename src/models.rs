@@ -16,6 +16,29 @@ pub(crate) struct JoinResponse {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
+pub(crate) enum KnockAction {
+    Peek,
+    Nudge,
+    Kick,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct KnockRequest {
+    pub(crate) which: KnockAction,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct KnockResponse {
+    pub(crate) state: GamePhase,
+    pub(crate) cards_on_table: usize,
+    pub(crate) players: usize,
+    pub(crate) retry_at: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct PlayRequest {
     pub(crate) player_id: String,
     pub(crate) stake: u64,

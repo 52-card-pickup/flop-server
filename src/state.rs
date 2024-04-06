@@ -1,4 +1,7 @@
-use std::sync::{Arc, RwLock};
+use std::{
+    collections::VecDeque,
+    sync::{Arc, RwLock},
+};
 
 use crate::cards::{Card, Deck};
 
@@ -31,6 +34,7 @@ pub struct Round {
     pub players_turn: Option<PlayerId>,
     pub raises: Vec<(PlayerId, u64)>,
     pub calls: Vec<(PlayerId, u64)>,
+    pub knocks: KnockState,
 }
 
 #[derive(Clone)]
@@ -57,6 +61,12 @@ pub enum BetAction {
     Check,
     Call,
     RaiseTo(u64),
+}
+
+#[derive(Default)]
+pub struct KnockState {
+    pub nudges: VecDeque<dt::Instant>,
+    pub kicks: VecDeque<dt::Instant>,
 }
 
 mod id {
