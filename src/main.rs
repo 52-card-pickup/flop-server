@@ -1,7 +1,8 @@
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use aide::{axum::ApiRouter, openapi::OpenApi, transform::TransformOpenApi};
 use axum::Extension;
+use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
 use tracing::info;
 

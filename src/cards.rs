@@ -82,7 +82,7 @@ impl Display for HandStrength {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {
             HandStrength::HighCard => "High Card",
-            HandStrength::OnePair => "  Pair",
+            HandStrength::OnePair => "Pair",
             HandStrength::TwoPair => "Two Pair",
             HandStrength::ThreeOfAKind => "Three of a Kind",
             HandStrength::Straight => "Straight",
