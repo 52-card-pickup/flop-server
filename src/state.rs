@@ -21,6 +21,7 @@ pub struct State {
     pub round: Round,
     pub last_update: dt::SignalInstant,
     pub status: GameStatus,
+    pub join_code: str::JoinCode,
 }
 
 #[derive(Default)]
@@ -87,6 +88,45 @@ mod id {
     }
 }
 
+pub mod str {
+    use rand::Rng;
+    use std::fmt::Display;
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct JoinCode(String);
+
+    impl Display for JoinCode {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{}", self.0)
+        }
+    }
+
+    impl TryFrom<&str> for JoinCode {
+        type Error = &'static str;
+
+        fn try_from(value: &str) -> Result<Self, Self::Error> {
+            if value.len() != 4 {
+                return Err("Join code must be 4 characters long");
+            }
+            if !value.chars().all(|c| c.is_ascii_uppercase()) {
+                return Err("Join code must be uppercase letters");
+            }
+            Ok(JoinCode(value.to_string()))
+        }
+    }
+
+    impl Default for JoinCode {
+        fn default() -> Self {
+            let mut rng = rand::thread_rng();
+            let code = std::iter::repeat(())
+                .map(|()| rng.gen_range('A'..='Z'))
+                .take(4)
+                .collect::<String>();
+            JoinCode(code)
+        }
+    }
+}
+
 pub mod dt {
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -133,43 +173,49 @@ pub mod dt {
     pub mod watch {
         use std::sync::{Arc, Mutex};
 
-        use tokio::sync::oneshot;
+        use tokio::sync::oneshot::{self, Sender};
 
         use super::Instant;
 
         #[derive(Clone, Default)]
-        pub struct SignalInstant(
-            Instant,
-            Arc<Mutex<Vec<tokio::sync::oneshot::Sender<Instant>>>>,
-        );
+        pub struct SignalInstant {
+            inner: Instant,
+            senders: Arc<Mutex<Vec<Sender<Instant>>>>,
+            triggered: bool,
+        }
 
         impl SignalInstant {
             pub fn as_u64(&self) -> u64 {
-                self.0.into()
+                self.inner.into()
             }
 
             pub fn set_now(&mut self) {
-                self.0.set_now();
+                self.inner.set_now();
+                self.triggered = true;
                 let senders = {
-                    let mut senders = self.1.lock().unwrap();
+                    let mut senders = self.senders.lock().unwrap();
                     senders.drain(..).collect::<Vec<_>>()
                 };
                 for sender in senders {
-                    let _ = sender.send(self.0);
+                    let _ = sender.send(self.inner);
                 }
             }
 
             pub fn wait_for(&self, wait_until: Instant) -> oneshot::Receiver<Instant> {
-                let when = self.0;
+                let when = self.inner;
                 let (sender, receiver) = oneshot::channel();
 
                 if when < wait_until {
                     sender.send(when).unwrap();
                 } else {
-                    let mut senders = self.1.lock().unwrap();
+                    let mut senders = self.senders.lock().unwrap();
                     senders.push(sender);
                 }
                 receiver
+            }
+
+            pub fn triggered(&self) -> bool {
+                self.triggered
             }
         }
     }

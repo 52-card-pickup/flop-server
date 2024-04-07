@@ -18,7 +18,7 @@ pub(crate) fn spawn_game_worker(state: state::SharedState) {
         let now_ms: u64 = now.into();
         let idle_ms = match status {
             state::GameStatus::Joining => Some(state::GAME_IDLE_TIMEOUT_SECONDS * 1000),
-            state::GameStatus::Complete => Some(state::GAME_IDLE_TIMEOUT_SECONDS * 1000 * 4),
+            state::GameStatus::Complete => Some(state::GAME_IDLE_TIMEOUT_SECONDS * 1000),
             state::GameStatus::Playing => None,
         };
 
@@ -30,20 +30,16 @@ pub(crate) fn spawn_game_worker(state: state::SharedState) {
             }
 
             let mut state = state.write().unwrap();
-            if !state.round.deck.is_fresh() || state.status == state::GameStatus::Complete {
-                info!("Game idle timeout, resetting game");
+            if state.last_update.triggered() || state.status == state::GameStatus::Complete {
+                info!(
+                    "Game idle timeout, resetting game. status: = {:?}, idle_for = {}s",
+                    state.status,
+                    (now_ms - last_update) / 1000
+                );
                 *state = state::State::default();
                 state.last_update.set_now();
             }
         };
-
-        let now_ms: u64 = now.into();
-        if now_ms - last_update > state::GAME_IDLE_TIMEOUT_SECONDS * 1000 {
-            info!("Game idle timeout, resetting game");
-            let mut state = state.write().unwrap();
-            *state = state::State::default();
-            return;
-        }
 
         if let Some(player) = current_player {
             let expired = player.ttl.map(|ttl| ttl < now).unwrap_or(false);

@@ -41,6 +41,7 @@ pub(crate) async fn room(
         pot: state.round.pot,
         cards: game::cards_on_table(&state),
         completed: game::completed_game(&state),
+        join_code: state.join_code.to_string(),
         last_update: state.last_update.as_u64(),
     };
 
@@ -49,13 +50,13 @@ pub(crate) async fn room(
 
 pub(crate) async fn player(
     State(state): State<SharedState>,
-    Path(player_id): Path<String>,
+    Path(path): Path<models::GamePlayerPath>,
     Query(query): Query<models::PollQuery>,
 ) -> JsonResult<models::GamePlayerState> {
     utils::wait_for_update(&state, query).await;
 
     let state = state.read().unwrap();
-    let player = utils::validate_player(&player_id, &state)?;
+    let player = utils::validate_player(&path.player_id, &state)?;
 
     let game_player_state = models::GamePlayerState {
         state: game::game_phase(&state),

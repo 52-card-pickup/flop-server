@@ -2,6 +2,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::cards::{CardSuite, CardValue};
 
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RoomAvailable {
+    pub(crate) room_url: String,
+    pub(crate) status: GamePhase,
+    pub(crate) player_count: usize,
+    pub(crate) join_code: String,
+}
+
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct JoinRequest {
@@ -37,6 +46,11 @@ pub struct PollQuery {
     pub timeout: Option<u64>,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub(crate) struct GamePlayerPath {
+    pub(crate) player_id: String,
+}
+
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct GamePlayerState {
@@ -47,8 +61,8 @@ pub(crate) struct GamePlayerState {
     pub(crate) call_amount: u64,
     pub(crate) min_raise_to: u64,
     pub(crate) turn_expires_dt: Option<u64>,
-    pub(crate) last_update: u64,
     pub(crate) current_round_stake: u64,
+    pub(crate) last_update: u64,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -59,6 +73,7 @@ pub(crate) struct GameClientRoom {
     pub(crate) pot: u64,
     pub(crate) cards: Vec<(CardSuite, CardValue)>,
     pub(crate) completed: Option<CompletedGame>,
+    pub(crate) join_code: String,
     pub(crate) last_update: u64,
 }
 

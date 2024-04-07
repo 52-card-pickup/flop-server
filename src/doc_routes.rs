@@ -11,9 +11,7 @@ use aide::{
 };
 use axum::{Extension, Json};
 
-use crate::state::SharedState;
-
-pub fn docs_routes(state: SharedState) -> ApiRouter {
+pub fn docs_routes() -> ApiRouter {
     // We infer the return types for these routes
     // as an example.
     //
@@ -43,8 +41,7 @@ pub fn docs_routes(state: SharedState) -> ApiRouter {
             ),
             |p| p.security_requirement("ApiKey"),
         )
-        .route("/private/api.json", get(serve_docs))
-        .with_state(state);
+        .route("/private/api.json", get(serve_docs));
 
     // Afterwards we disable response inference because
     // it might be incorrect for other routes.
