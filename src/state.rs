@@ -132,6 +132,7 @@ pub mod dt {
     }
 
     pub mod watch {
+        use std::future::Future;
         use std::sync::{Arc, Mutex};
 
         use tokio::sync::oneshot;
@@ -157,7 +158,7 @@ pub mod dt {
                 }
             }
 
-            pub fn wait_for(&self, since: Instant) -> impl std::future::Future<Output = Instant> {
+            pub fn wait_for(&self, since: Instant) -> impl Future<Output = Instant> + '_ {
                 let receiver = match self.try_wait_for(since) {
                     Some(receiver) => receiver,
                     None => {
@@ -166,7 +167,10 @@ pub mod dt {
                         receiver
                     }
                 };
-                async move { receiver.await.unwrap() }
+                async move {
+                    _ = receiver.await;
+                    self.0
+                }
             }
 
             pub fn try_wait_for(&self, since: Instant) -> Option<oneshot::Receiver<Instant>> {
