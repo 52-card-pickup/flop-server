@@ -158,7 +158,7 @@ pub mod dt {
                 }
             }
 
-            pub fn wait_for(&self, since: Instant) -> impl Future<Output = Instant> + '_ {
+            pub fn wait_for(&self, since: Instant) -> impl Future<Output = Option<Instant>> {
                 let receiver = match self.try_wait_for(since) {
                     Some(receiver) => receiver,
                     None => {
@@ -167,10 +167,7 @@ pub mod dt {
                         receiver
                     }
                 };
-                async move {
-                    _ = receiver.await;
-                    self.0
-                }
+                async move { receiver.await.ok() }
             }
 
             pub fn try_wait_for(&self, since: Instant) -> Option<oneshot::Receiver<Instant>> {
