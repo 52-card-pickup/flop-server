@@ -37,7 +37,6 @@ pub(crate) fn spawn_game_worker(state: state::SharedState) {
                     (now_ms - last_update) / 1000
                 );
                 *state = state::State::default();
-                state.last_update.set_now();
             }
         };
 
