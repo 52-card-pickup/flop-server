@@ -89,12 +89,7 @@ pub(crate) fn start_game(state: &mut state::State) -> Result<(), String> {
     reset_players(state);
     next_turn(state, None);
     if state.status == state::GameStatus::Complete {
-        state.round.deck = cards::Deck::default();
-        for player in state.players.values_mut() {
-            let card_1 = state.round.deck.pop().unwrap();
-            let card_2 = state.round.deck.pop().unwrap();
-            player.cards = (card_1, card_2);
-        }
+        deal_new_deck(state);
     }
 
     state.status = state::GameStatus::Playing;
@@ -419,6 +414,16 @@ fn complete_round(state: &mut state::State) {
         }
         _ => unreachable!(),
     }
+}
+
+fn deal_new_deck(state: &mut state::State) {
+    let mut deck = cards::Deck::default();
+    for player in state.players.values_mut() {
+        let card_1 = deck.pop().unwrap();
+        let card_2 = deck.pop().unwrap();
+        player.cards = (card_1, card_2);
+    }
+    state.round.deck = deck;
 }
 
 fn place_cards_on_table(state: &mut state::State, count: usize) {
