@@ -1,4 +1,7 @@
-use crate::{cards, models, state};
+use crate::{
+    cards, models,
+    state::{self, TickerEvent},
+};
 
 use tracing::info;
 
@@ -6,13 +9,14 @@ pub(crate) fn spawn_game_worker(state: state::SharedState) {
     async fn run_tasks(state: &state::SharedState) {
         let now = state::dt::Instant::default();
 
-        let (last_update, current_player, status) = {
+        let (last_update, current_player, status, ticker_expired) = {
             let state = state.read().await;
             let last_update = state.last_update.as_u64();
             let players_turn = state.round.players_turn.clone();
             let current_player = players_turn.and_then(|id| state.players.get(&id)).cloned();
+            let ticker_expired = state.ticker.has_expired_items(now);
 
-            (last_update, current_player, state.status)
+            (last_update, current_player, state.status, ticker_expired)
         };
 
         let now_ms: u64 = now.into();
@@ -54,7 +58,12 @@ pub(crate) fn spawn_game_worker(state: state::SharedState) {
                 fold_player(&mut state, &player.id).unwrap();
 
                 // TODO: notify player, soft kick
-                state.players.remove(&player.id);
+                if let Some(player) = state.players.remove(&player.id) {
+                    info!("Player {} removed from game", player.id);
+                    state
+                        .ticker
+                        .emit(TickerEvent::PlayerTurnTimeout(player.name));
+                }
                 if state.players.len() < 2 {
                     info!("Not enough players, pausing game until more players join");
                     state.status = state::GameStatus::Joining;
@@ -65,6 +74,11 @@ pub(crate) fn spawn_game_worker(state: state::SharedState) {
                 }
                 state.last_update.set_now();
             }
+        }
+
+        if ticker_expired {
+            let mut state = state.write().await;
+            state.ticker.clear_expired_items(now);
         }
     }
 
@@ -93,6 +107,7 @@ pub(crate) fn start_game(state: &mut state::State) -> Result<(), String> {
     }
 
     state.status = state::GameStatus::Playing;
+    state.ticker.emit(TickerEvent::GameStarted);
 
     Ok(())
 }
@@ -120,6 +135,9 @@ pub(crate) fn add_new_player(
         cards: (card_1, card_2),
     };
     state.players.insert(player_id.clone(), player);
+    state
+        .ticker
+        .emit(TickerEvent::PlayerJoined(player_id.clone()));
     Ok(player_id)
 }
 
@@ -177,6 +195,10 @@ pub(crate) fn accept_player_bet(
     player.stake += pot_addition;
     state.round.pot += pot_addition;
 
+    state
+        .ticker
+        .emit(TickerEvent::PlayerBet(player_id.clone(), action));
+
     next_turn(state, Some(player_id));
 
     if state.round.players_turn.is_none() {
@@ -230,6 +252,10 @@ fn accept_blinds(
     state.round.pot += small_blind_stake;
 
     state
+        .ticker
+        .emit(TickerEvent::SmallBlindPosted(small_blind_player.id.clone()));
+
+    state
         .round
         .raises
         .push((small_blind_player.id.clone(), small_blind_stake));
@@ -249,6 +275,10 @@ fn accept_blinds(
         .round
         .raises
         .push((big_blind_player.id.clone(), big_blind_stake));
+
+    state
+        .ticker
+        .emit(TickerEvent::BigBlindPosted(big_blind_player.id.clone()));
 }
 
 fn reset_players(state: &mut state::State) {
@@ -421,6 +451,7 @@ fn place_cards_on_table(state: &mut state::State, count: usize) {
         let next_card = state.round.deck.pop().unwrap();
         state.round.cards_on_table.push(next_card);
     }
+    state.ticker.emit(TickerEvent::CardsDealtToTable(count));
 }
 
 fn rotate_dealer(state: &mut state::State) {
@@ -457,6 +488,9 @@ fn payout_game_winners(state: &mut state::State) {
             let winner = stakes.first().unwrap();
             let player = state.players.get_mut(&winner.id).unwrap();
             player.balance += round.pot;
+            state
+                .ticker
+                .emit(TickerEvent::PaidPot(winner.id.clone(), round.pot));
             info!(
                 "Player {} is the only player left, whole pot is won, pot: {}",
                 player.id, round.pot
@@ -535,8 +569,26 @@ fn payout_game_winners(state: &mut state::State) {
 
         let winners_count = winning_players.len() as u64;
         let payout = pot / winners_count;
+        match &winning_players[..] {
+            [] => {}
+            [winner] => {
+                state.ticker.emit(TickerEvent::Winner(
+                    winner.id.clone(),
+                    winning_hand.strength(),
+                ));
+            }
+            winners => {
+                state.ticker.emit(TickerEvent::SplitPotWinners(
+                    winners.iter().map(|p| p.id.clone()).collect(),
+                    winning_hand.strength(),
+                ));
+            }
+        }
         for winner in winning_players.iter_mut() {
             winner.balance += payout;
+            state
+                .ticker
+                .emit(TickerEvent::PaidPot(winner.id.clone(), payout));
         }
 
         let winners = winning_players
@@ -596,6 +648,42 @@ pub(crate) fn game_phase(state: &state::State) -> models::GamePhase {
         state::GameStatus::Playing => models::GamePhase::Playing,
         state::GameStatus::Complete => models::GamePhase::Complete,
     }
+}
+
+pub(crate) fn ticker(state: &state::State) -> Option<String> {
+    fn ticker_header(state: &state::State, now: state::dt::Instant) -> Option<String> {
+        match state.ticker.len() {
+            0 => None,
+            _ => Some(format!(
+                "\x00{}\x00{}\x00",
+                now.as_u64(),
+                state.ticker.len()
+            )),
+        }
+    }
+    fn ticker_item(
+        state: &state::State,
+        item: &state::ticker::TickerItem,
+        now: state::dt::Instant,
+    ) -> String {
+        let start_offset_ms = item.start.as_u64().saturating_sub(now.as_u64());
+        let duration = item.end.as_u64().saturating_sub(item.start.as_u64());
+        format!(
+            "{}|{}|{}\x00{}",
+            item.seq_index,
+            start_offset_ms,
+            duration,
+            item.payload.format(state)
+        )
+    }
+    let now = state::dt::Instant::default();
+    let header = ticker_header(state, now)?;
+    let items: Vec<_> = state
+        .ticker
+        .iter()
+        .map(|item| ticker_item(state, item, now))
+        .collect();
+    Some(format!("{}{}", header, items.join("\n")))
 }
 
 pub(crate) fn completed_game(state: &state::State) -> Option<models::CompletedGame> {
@@ -665,6 +753,10 @@ pub(crate) fn fold_player(
 
     player.folded = true;
 
+    state
+        .ticker
+        .emit(TickerEvent::PlayerFolded(player_id.clone()));
+
     let mut remaining_players: Vec<_> = state.players.values_mut().filter(|p| !p.folded).collect();
     match remaining_players.as_mut_slice() {
         [only_player_left] => {
@@ -672,8 +764,13 @@ pub(crate) fn fold_player(
                 "All players but one have folded, paying out pot to {} and completing game",
                 only_player_left.id
             );
-            only_player_left.balance += state.round.pot;
+            let pot = state.round.pot;
+            only_player_left.balance += pot;
             state.round.pot = 0;
+
+            state
+                .ticker
+                .emit(TickerEvent::PaidPot(only_player_left.id.clone(), pot));
 
             reset_players(state);
             rotate_dealer(state);

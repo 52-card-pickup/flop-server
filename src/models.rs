@@ -59,6 +59,7 @@ pub(crate) struct GameClientRoom {
     pub(crate) pot: u64,
     pub(crate) cards: Vec<(CardSuite, CardValue)>,
     pub(crate) completed: Option<CompletedGame>,
+    pub(crate) ticker: Option<String>,
     pub(crate) last_update: u64,
 }
 

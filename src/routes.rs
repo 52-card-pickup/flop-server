@@ -41,6 +41,7 @@ pub(crate) async fn room(
         pot: state.round.pot,
         cards: game::cards_on_table(&state),
         completed: game::completed_game(&state),
+        ticker: game::ticker(&state),
         last_update: state.last_update.as_u64(),
     };
 
