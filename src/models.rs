@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-use crate::cards::{CardSuite, CardValue};
+use crate::{
+    cards::{CardSuite, CardValue},
+    state::Motion,
+};
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -32,6 +35,13 @@ pub(crate) enum PlayAction {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct StartVoteRequest {
+    pub(crate) player_id: String,
+    pub(crate) motion: Motion,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct PollQuery {
     pub since: Option<u64>,
     pub timeout: Option<u64>,
@@ -60,6 +70,7 @@ pub(crate) struct GameClientRoom {
     pub(crate) cards: Vec<(CardSuite, CardValue)>,
     pub(crate) completed: Option<CompletedGame>,
     pub(crate) last_update: u64,
+    pub(crate) votes: u64,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]

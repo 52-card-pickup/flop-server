@@ -3,6 +3,7 @@ use std::sync::Arc;
 use crate::cards::{Card, Deck};
 
 pub use id::PlayerId;
+use serde::Deserialize;
 use tokio::sync::RwLock;
 
 use self::players::Players;
@@ -22,6 +23,34 @@ pub struct State {
     pub round: Round,
     pub last_update: dt::SignalInstant,
     pub status: GameStatus,
+    pub vote: Option<Vote>,
+}
+
+#[derive(Default)]
+pub struct Vote {
+    pub start_time: dt::SignalInstant,
+    pub end_time: dt::SignalInstant,
+
+    pub votes: Vec<(PlayerId, bool)>,
+    pub motion: Motion,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema, Default)]
+pub struct Motion {
+    pub motion: MotionType,
+    pub player_id: PlayerId,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub enum MotionType {
+    KickPlayer,
+    DoubleBlinds,
+}
+
+impl Default for MotionType {
+    fn default() -> Self {
+        MotionType::KickPlayer
+    }
 }
 
 #[derive(Default)]
@@ -61,9 +90,12 @@ pub enum BetAction {
 }
 
 mod id {
+    use serde::Deserialize;
     use std::{fmt::Display, str::FromStr};
 
-    #[derive(Debug, Clone, PartialEq, Eq, Hash, Ord, PartialOrd)]
+    #[derive(
+        Debug, Clone, PartialEq, Eq, Hash, Ord, PartialOrd, Deserialize, schemars::JsonSchema,
+    )]
     pub struct PlayerId(String);
 
     impl Display for PlayerId {
@@ -156,6 +188,10 @@ pub mod dt {
                 for sender in senders.drain(..) {
                     let _ = sender.send(self.0);
                 }
+            }
+
+            pub fn add_ms(&mut self, ms: u64) {
+                self.0 .0 += ms;
             }
 
             pub fn wait_for(&self, since: Instant) -> impl Future<Output = Option<Instant>> {

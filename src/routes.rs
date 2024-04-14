@@ -14,9 +14,15 @@ use axum::{
 };
 use tracing::info;
 
+pub mod vote;
+
+use vote::vote_subroutes;
+
 type JsonResult<T> = Result<Json<T>, StatusCode>;
 
 pub(crate) fn api_routes(state: state::SharedState) -> ApiRouter {
+    let vote_router = vote_subroutes(state.clone()); // Clone the state Arc to pass to the subrouter
+
     ApiRouter::new()
         .api_route("/room", get_with(room, docs::room))
         .api_route("/room/close", post_with(close_room, docs::close_room))
@@ -25,6 +31,7 @@ pub(crate) fn api_routes(state: state::SharedState) -> ApiRouter {
         .api_route("/join", post_with(join, docs::join))
         .api_route("/play", post_with(play, docs::play))
         .with_state(state)
+        .nest("/vote", vote_router)
 }
 
 pub(crate) async fn room(
@@ -35,6 +42,10 @@ pub(crate) async fn room(
 
     let state = state.read().await;
 
+    let votes = match &state.vote {
+        Some(vote) => vote.end_time.as_u64(),
+        _ => 0,
+    };
     let game_client_state = models::GameClientRoom {
         state: game::game_phase(&state),
         players: game::room_players(&state),
@@ -42,6 +53,7 @@ pub(crate) async fn room(
         cards: game::cards_on_table(&state),
         completed: game::completed_game(&state),
         last_update: state.last_update.as_u64(),
+        votes,
     };
 
     Json(game_client_state)
@@ -110,6 +122,29 @@ pub(crate) async fn play(
     info!("Player {} played round", payload.player_id);
     Ok(Json(()))
 }
+
+// pub(crate) async fn vote(
+//     State(state): State<SharedState>,
+//     Json(payload): Json<models::VoteRequest>,
+// ) -> JsonResult<()> {
+//     let mut state = state.write().await;
+//     let player = utils::validate_player(&payload.player_id, &state)?;
+
+//     if let Err(err) = game::vote_for_player(&mut state, &player.id, &payload.vote_for) {
+//         info!(
+//             "Player {} failed to vote for {}: {}",
+//             payload.player_id, payload.vote_for, err
+//         );
+//         return Err(StatusCode::BAD_REQUEST);
+//     }
+
+//     state.last_update.set_now();
+//     info!(
+//         "Player {} voted for {}",
+//         payload.player_id, payload.vote_for
+//     );
+//     Ok(Json(()))
+// }
 
 pub(crate) async fn join(
     State(state): State<SharedState>,

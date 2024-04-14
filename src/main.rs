@@ -12,6 +12,7 @@ mod game;
 mod models;
 mod routes;
 mod state;
+mod vote;
 
 #[tokio::main]
 async fn main() {
