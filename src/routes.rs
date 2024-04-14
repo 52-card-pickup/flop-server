@@ -22,6 +22,10 @@ pub(crate) fn api_routes(state: state::SharedState) -> ApiRouter {
         .api_route("/room/close", post_with(close_room, docs::close_room))
         .api_route("/room/reset", post_with(reset_room, docs::reset_room))
         .api_route("/player/:player_id", get_with(player, docs::player))
+        .api_route(
+            "/player/:player_id/leave",
+            post_with(player_leave, docs::player_leave),
+        )
         .api_route("/join", post_with(join, docs::join))
         .api_route("/play", post_with(play, docs::play))
         .with_state(state)
@@ -72,6 +76,26 @@ pub(crate) async fn player(
     Ok(Json(game_player_state))
 }
 
+pub(crate) async fn player_leave(
+    State(state): State<SharedState>,
+    Path(player_id): Path<String>,
+) -> JsonResult<()> {
+    let mut state = state.write().await;
+    let player = utils::validate_player(&player_id, &state)?;
+
+    let players_turn = state.round.players_turn.replace(player.id.clone());
+    game::fold_player(&mut state, &player.id).map_err(|err| {
+        info!("Player {} failed to leave: {}", player.id, err);
+        StatusCode::BAD_REQUEST
+    })?;
+    // TODO: test. removing a player here might make any player id lookups fail?
+    state.players.remove(&player.id);
+    state.round.players_turn = players_turn;
+
+    state.last_update.set_now();
+    info!("Player {} left", player.id);
+    Ok(Json(()))
+}
 pub(crate) async fn play(
     State(state): State<SharedState>,
     Json(payload): Json<models::PlayRequest>,
@@ -215,6 +239,10 @@ pub mod docs {
 
     pub fn player(op: TransformOperation) -> TransformOperation {
         op.description("Get the current state of a player.")
+    }
+
+    pub fn player_leave(op: TransformOperation) -> TransformOperation {
+        op.description("Leave the game room.")
     }
 
     pub fn play(op: TransformOperation) -> TransformOperation {
