@@ -116,6 +116,7 @@ pub(crate) fn add_new_player(
         balance: state::STARTING_BALANCE,
         stake: 0,
         folded: false,
+        photo: None,
         ttl: None,
         cards: (card_1, card_2),
     };
@@ -645,10 +646,19 @@ pub(crate) fn room_players(state: &state::State) -> Vec<models::GameClientPlayer
             name: p.name.clone(),
             balance: p.balance,
             folded: p.folded,
+            photo: player_photo_url(p),
             turn_expires_dt: p.ttl.map(|dt| dt.into()),
         })
         .collect();
     players
+}
+
+fn player_photo_url(p: &state::Player) -> Option<String> {
+    let (_, guid) = p.photo.as_ref()?;
+    let guid = guid.as_hyphenated().to_string();
+    let (hash, _) = guid.split_once('-').expect("uuid should have hyphen");
+
+    Some(format!("player/{}/photo?hash={}", p.id, hash))
 }
 
 pub(crate) fn fold_player(
