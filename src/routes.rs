@@ -83,7 +83,7 @@ pub(crate) async fn get_player_photo(
     Path(player_id): Path<String>,
     Query(hash): Query<Option<(String, String)>>,
 ) -> Result<(header::HeaderMap, body::Bytes), StatusCode> {
-    let state = state.read().unwrap();
+    let state = state.read().await;
     let player = utils::validate_player(&player_id, &state)?;
 
     let photo = player.photo.as_ref().ok_or(StatusCode::NOT_FOUND)?;
@@ -113,7 +113,7 @@ pub(crate) async fn post_player_photo(
     mut multipart: Multipart,
 ) -> JsonResult<()> {
     let player_id = {
-        let state = state.read().unwrap();
+        let state = state.read().await;
         utils::validate_player(&player_id, &state)?.id
     };
 
@@ -135,7 +135,7 @@ pub(crate) async fn post_player_photo(
     let data = field.bytes().await.unwrap();
     let size = data.len();
 
-    let mut state = state.write().unwrap();
+    let mut state = state.write().await;
     let player = state
         .players
         .get_mut(&player_id)
