@@ -83,14 +83,10 @@ pub(crate) async fn player_leave(
     let mut state = state.write().await;
     let player = utils::validate_player(&player_id, &state)?;
 
-    let players_turn = state.round.players_turn.replace(player.id.clone());
-    game::fold_player(&mut state, &player.id).map_err(|err| {
+    game::remove_player(&mut state, &player.id).map_err(|err| {
         info!("Player {} failed to leave: {}", player.id, err);
         StatusCode::BAD_REQUEST
     })?;
-    // TODO: test. removing a player here might make any player id lookups fail?
-    state.players.remove(&player.id);
-    state.round.players_turn = players_turn;
 
     state.last_update.set_now();
     info!("Player {} left", player.id);

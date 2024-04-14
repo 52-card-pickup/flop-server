@@ -2,17 +2,31 @@ use crate::{cards, models, state};
 
 use tracing::info;
 
-pub(crate) fn spawn_game_worker(state: state::SharedState) {
-    async fn run_tasks(state: &state::SharedState) {
+pub mod worker {
+    use tracing::info;
+
+    use crate::state;
+
+    pub(crate) fn spawn_game_worker(state: state::SharedState) {
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                worker_tick(&state).await;
+            }
+        });
+    }
+
+    pub async fn worker_tick(state: &state::SharedState) {
         let now = state::dt::Instant::default();
 
-        let (last_update, current_player, status) = {
+        let (last_update, current_player, status, mut player_count) = {
             let state = state.read().await;
             let last_update = state.last_update.as_u64();
             let players_turn = state.round.players_turn.clone();
             let current_player = players_turn.and_then(|id| state.players.get(&id)).cloned();
+            let player_count = state.players.len();
 
-            (last_update, current_player, state.status)
+            (last_update, current_player, state.status, player_count)
         };
 
         let now_ms: u64 = now.into();
@@ -51,29 +65,25 @@ pub(crate) fn spawn_game_worker(state: state::SharedState) {
                 info!("Player {} turn expired", player.id);
                 let mut state = state.write().await;
 
-                fold_player(&mut state, &player.id).unwrap();
+                super::fold_player(&mut state, &player.id).unwrap();
 
                 // TODO: notify player, soft kick
                 state.players.remove(&player.id);
-                if state.players.len() < 2 {
-                    info!("Not enough players, pausing game until more players join");
-                    state.status = state::GameStatus::Joining;
-                    state.round = state::Round::default();
-                    for player in state.players.values_mut() {
-                        player.ttl = None;
-                    }
-                }
+                player_count = state.players.len();
                 state.last_update.set_now();
             }
         }
-    }
 
-    tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-            run_tasks(&state).await;
+        if status != state::GameStatus::Joining && player_count < 2 {
+            let mut state = state.write().await;
+            info!("Not enough players, pausing game until more players join");
+            state.status = state::GameStatus::Joining;
+            state.round = state::Round::default();
+            for player in state.players.values_mut() {
+                player.ttl = None;
+            }
         }
-    });
+    }
 }
 
 pub(crate) fn start_game(state: &mut state::State) -> Result<(), String> {
@@ -694,6 +704,23 @@ pub(crate) fn fold_player(
     Ok(())
 }
 
+pub(crate) fn remove_player(
+    state: &mut state::State,
+    player_id: &state::PlayerId,
+) -> Result<(), String> {
+    let players_turn = state.round.players_turn.replace(player_id.clone());
+    fold_player(state, player_id).map_err(|err| {
+        info!("Player {} failed to leave: {}", player_id, err);
+        "Failed to leave".to_string()
+    })?;
+    state.players.remove(player_id);
+    state.round.players_turn = players_turn;
+
+    state.last_update.set_now();
+    info!("Player {} left", player_id);
+    Ok(())
+}
+
 pub(crate) fn reset_ttl(state: &mut state::State, id: &state::PlayerId) -> Result<(), String> {
     let now = state::dt::Instant::default();
     match state.players.get_mut(id) {
@@ -740,6 +767,8 @@ pub(crate) fn turn_expires_dt(state: &state::State, player_id: &state::PlayerId)
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::{
         game::tests::fixtures::GameFixture,
@@ -760,6 +789,59 @@ mod tests {
 
         let (state, _) = fixtures::start_two_player_game(GameFixture::Round4);
         assert_eq!(cards_on_table(&state).len(), 5);
+    }
+
+    #[test]
+    fn three_player_game_deals_correct_cards_to_table() {
+        let (state, _) = fixtures::start_three_player_game(GameFixture::Round1);
+        assert_eq!(cards_on_table(&state).len(), 0);
+
+        let (state, _) = fixtures::start_three_player_game(GameFixture::Round2);
+        assert_eq!(cards_on_table(&state).len(), 3);
+
+        let (state, _) = fixtures::start_three_player_game(GameFixture::Round3);
+        assert_eq!(cards_on_table(&state).len(), 4);
+
+        let (state, _) = fixtures::start_three_player_game(GameFixture::Round4);
+        assert_eq!(cards_on_table(&state).len(), 5);
+    }
+
+    #[tokio::test]
+    async fn three_player_game_allows_player_to_leave() {
+        async fn fixture(first_player: usize) {
+            let (mut state, (player_1, player_2, player_3)) =
+                fixtures::start_three_player_game(GameFixture::Round2);
+
+            let (player_1, player_2, player_3) = match first_player {
+                1 => (player_1, player_2, player_3),
+                2 => (player_2, player_3, player_1),
+                3 => (player_3, player_1, player_2),
+                _ => unreachable!(),
+            };
+
+            assert_eq!(state.players.len(), 3);
+            assert_eq!(state.status, state::GameStatus::Playing);
+
+            remove_player(&mut state, &player_1).unwrap();
+            assert_eq!(state.players.len(), 2);
+            assert_eq!(state.status, state::GameStatus::Playing);
+
+            remove_player(&mut state, &player_2).unwrap();
+            assert_eq!(state.players.len(), 1);
+            assert_eq!(state.status, state::GameStatus::Complete);
+
+            remove_player(&mut state, &player_3).unwrap();
+            let mut state = Arc::new(tokio::sync::RwLock::new(state));
+            worker::worker_tick(&mut state).await;
+
+            let state = state.read().await;
+            assert_eq!(state.players.len(), 0);
+            assert_eq!(state.status, state::GameStatus::Joining);
+        }
+
+        fixture(1).await;
+        fixture(2).await;
+        fixture(3).await;
     }
 
     #[test]
@@ -940,7 +1022,8 @@ mod tests {
 
     #[test]
     fn three_player_game_fold_on_small_blind() {
-        let (mut state, (player_1, player_2, player_3)) = fixtures::start_three_player_game();
+        let (mut state, (player_1, player_2, player_3)) =
+            fixtures::start_three_player_game(GameFixture::Round1);
         assert_eq!(cards_on_table(&state).len(), 0);
         assert_eq!(state.round.pot, 30);
 
@@ -954,7 +1037,8 @@ mod tests {
 
     #[test]
     fn three_player_game_check_until_river_then_raise_on_last_player() {
-        let (mut state, (player_1, player_2, player_3)) = fixtures::start_three_player_game();
+        let (mut state, (player_1, player_2, player_3)) =
+            fixtures::start_three_player_game(GameFixture::Round1);
         assert_eq!(cards_on_table(&state).len(), 0);
         assert_eq!(state.round.pot, 30);
 
@@ -1096,7 +1180,9 @@ mod tests {
             unreachable!();
         }
 
-        pub fn start_three_player_game() -> (
+        pub fn start_three_player_game(
+            game_fixture: GameFixture,
+        ) -> (
             state::State,
             (state::PlayerId, state::PlayerId, state::PlayerId),
         ) {
@@ -1113,8 +1199,41 @@ mod tests {
             assert_eq!(starting_balance, STARTING_BALANCE);
 
             start_game(&mut state).unwrap();
+            if game_fixture == GameFixture::Round1 {
+                return (state, (player_1, player_2, player_3));
+            }
 
-            (state, (player_1, player_2, player_3))
+            // assert pot balance on start is 30:
+            assert_eq!(state.round.pot, 30);
+            accept_player_bet(&mut state, &player_3, P::Call).unwrap();
+            accept_player_bet(&mut state, &player_1, P::Call).unwrap();
+            accept_player_bet(&mut state, &player_2, P::Check).unwrap();
+            assert_eq!(state.round.pot, 60);
+            assert_eq!(cards_on_table(&state).len(), 3);
+
+            if game_fixture == GameFixture::Round2 {
+                return (state, (player_1, player_2, player_3));
+            }
+
+            accept_player_bet(&mut state, &player_1, P::Check).unwrap();
+            accept_player_bet(&mut state, &player_2, P::Check).unwrap();
+            accept_player_bet(&mut state, &player_3, P::Check).unwrap();
+            assert_eq!(cards_on_table(&state).len(), 4);
+
+            if game_fixture == GameFixture::Round3 {
+                return (state, (player_1, player_2, player_3));
+            }
+
+            accept_player_bet(&mut state, &player_1, P::Check).unwrap();
+            accept_player_bet(&mut state, &player_2, P::Check).unwrap();
+            accept_player_bet(&mut state, &player_3, P::Check).unwrap();
+            assert_eq!(cards_on_table(&state).len(), 5);
+
+            if game_fixture == GameFixture::Round4 {
+                return (state, (player_1, player_2, player_3));
+            }
+
+            unreachable!();
         }
     }
 }
