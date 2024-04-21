@@ -308,19 +308,18 @@ fn next_turn(state: &mut state::State, current_player_id: Option<&state::PlayerI
 fn get_rounds_starting_player(state: &mut state::State) -> Option<state::PlayerId> {
     let players_in_round = &mut state
         .players
-        .keys()
-        .cloned()
-        .filter(|id| !state.players.get(id).unwrap().folded)
-        .filter(|id| state.players.get(id).unwrap().balance > 0);
+        .iter()
+        .filter(|(_, p)| !p.folded && p.balance > 0);
 
-    let players = players_in_round.clone().collect::<Vec<_>>();
+    let starting_player = players_in_round.next();
 
-    // if only one player left, return None in order to
-    // complete the round
-    if players.len() < 2 {
+    // if no other players left, the game is complete
+    let next_playable_player = players_in_round.next();
+    if let None = next_playable_player {
         return None;
     }
-    players_in_round.next()
+
+    starting_player.map(|(id, _)| id.clone())
 }
 
 fn get_next_players_turn(
@@ -336,8 +335,7 @@ fn get_next_players_turn(
         let all_players_have_called = state
             .players
             .iter()
-            .filter(|(_, player)| !player.folded)
-            .filter(|(_, player)| player.balance > 0)
+            .filter(|(_, player)| !player.folded && player.balance > 0)
             .all(|(_, player)| player_stake_in_round(state, &player.id) == call_amount);
 
         if all_players_have_called {
@@ -361,8 +359,7 @@ fn get_next_players_turn(
         .enumerate()
         .skip_while(|(_, (id, _))| id != current_player_id)
         .skip(1)
-        .filter(|(_, (_, player))| !player.folded)
-        .filter(|(_, player)| player.1.balance > 0)
+        .filter(|(_, (_, player))| !player.folded && player.balance > 0)
         .next()
         .map(|(_, (id, _))| id.clone());
 
@@ -370,8 +367,7 @@ fn get_next_players_turn(
         state
             .players
             .iter()
-            .filter(|(_, player)| !player.folded)
-            .filter(|(_, player)| player.balance > 0)
+            .filter(|(_, player)| !player.folded && player.balance > 0)
             .next()
             .filter(|(_, player)| player_stake_in_round(state, &player.id) != call_amount)
             .map(|(id, _)| id.clone())
