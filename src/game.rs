@@ -277,7 +277,7 @@ fn next_turn(state: &mut state::State, current_player_id: Option<&state::PlayerI
 
             next_player_id
         }
-        None => state.players.keys().cloned().next(),
+        None => get_rounds_starting_player(state),
     };
 
     match next_player_id
@@ -297,6 +297,23 @@ fn next_turn(state: &mut state::State, current_player_id: Option<&state::PlayerI
     state.round.players_turn = next_player_id;
 }
 
+fn get_rounds_starting_player(state: &mut state::State) -> Option<state::PlayerId> {
+    let players_in_round = &mut state
+        .players
+        .iter()
+        .filter(|(_, p)| !p.folded && p.balance > 0);
+
+    let starting_player = players_in_round.next();
+
+    // if no other players left, the game is complete
+    let next_playable_player = players_in_round.next();
+    if let None = next_playable_player {
+        return None;
+    }
+
+    starting_player.map(|(id, _)| id.clone())
+}
+
 fn get_next_players_turn(
     state: &state::State,
     current_player_id: &state::PlayerId,
@@ -310,7 +327,7 @@ fn get_next_players_turn(
         let all_players_have_called = state
             .players
             .iter()
-            .filter(|(_, player)| !player.folded)
+            .filter(|(_, player)| !player.folded && player.balance > 0)
             .all(|(_, player)| player_stake_in_round(state, &player.id) == call_amount);
 
         if all_players_have_called {
@@ -334,7 +351,7 @@ fn get_next_players_turn(
         .enumerate()
         .skip_while(|(_, (id, _))| id != current_player_id)
         .skip(1)
-        .filter(|(_, (_, player))| !player.folded)
+        .filter(|(_, (_, player))| !player.folded && player.balance > 0)
         .next()
         .map(|(_, (id, _))| id.clone());
 
@@ -342,7 +359,7 @@ fn get_next_players_turn(
         state
             .players
             .iter()
-            .filter(|(_, player)| !player.folded)
+            .filter(|(_, player)| !player.folded && player.balance > 0)
             .next()
             .filter(|(_, player)| player_stake_in_round(state, &player.id) != call_amount)
             .map(|(id, _)| id.clone())
@@ -393,12 +410,18 @@ fn complete_round(state: &mut state::State) {
             next_turn(state, None);
             state.round.raises.clear();
             state.round.calls.clear();
+            if state.round.players_turn.is_none() {
+                complete_round(state);
+            }
         }
         3 | 4 => {
             place_cards_on_table(state, 1);
             next_turn(state, None);
             state.round.raises.clear();
             state.round.calls.clear();
+            if state.round.players_turn.is_none() {
+                complete_round(state);
+            }
         }
         5 => {
             payout_game_winners(state);
@@ -1035,21 +1058,8 @@ mod tests {
 
         accept_player_bet(&mut state, &player_2, P::RaiseTo(player_1_balance + 100)).unwrap();
         accept_player_bet(&mut state, &player_1, P::Call).unwrap();
-        assert_eq!(cards_on_table(&state).len(), 3);
 
-        // game 2, round 2
-        accept_player_bet(&mut state, &player_2, P::Check).unwrap();
-        accept_player_bet(&mut state, &player_1, P::Check).unwrap();
-        assert_eq!(cards_on_table(&state).len(), 4);
-
-        // game 2, round 3
-        accept_player_bet(&mut state, &player_2, P::Check).unwrap();
-        accept_player_bet(&mut state, &player_1, P::Check).unwrap();
         assert_eq!(cards_on_table(&state).len(), 5);
-
-        // game 2, round 4
-        accept_player_bet(&mut state, &player_2, P::Check).unwrap();
-        accept_player_bet(&mut state, &player_1, P::Check).unwrap();
         assert_eq!(state.status, state::GameStatus::Complete);
 
         let loser = state.players.get(&player_1).unwrap();
@@ -1098,6 +1108,58 @@ mod tests {
             state.players.get(&player_2).unwrap().balance,
             STARTING_BALANCE - 40
         );
+    }
+
+    #[test]
+    fn three_player_game_folded_players_dont_have_turns_in_further_rounds() {
+        let (mut state, (player_1, player_2, player_3)) = fixtures::start_three_player_game();
+        assert_eq!(cards_on_table(&state).len(), 0);
+
+        accept_player_bet(&mut state, &player_3, P::Call).unwrap();
+        fold_player(&mut state, &player_1).expect("R2-P1");
+        accept_player_bet(&mut state, &player_2, P::Check).unwrap();
+
+        assert_eq!(cards_on_table(&state).len(), 3);
+
+        // ensure player 1 does not take a turn given they have folded
+        accept_player_bet(&mut state, &player_2, P::Check).unwrap();
+    }
+
+    #[test]
+    fn three_player_game_raise_someone_over_all_in_completes() {
+        let (mut state, (player_1, player_2, player_3)) = fixtures::start_three_player_game();
+        let player_1 = state.players.get_mut(&player_1).unwrap();
+        player_1.balance = 100;
+
+        let player_1 = player_1.id.clone();
+
+        assert_eq!(cards_on_table(&state).len(), 0);
+
+        accept_player_bet(&mut state, &player_3, P::Call).unwrap();
+        accept_player_bet(&mut state, &player_1, P::Call).unwrap();
+        accept_player_bet(&mut state, &player_2, P::Check).unwrap();
+
+        assert_eq!(cards_on_table(&state).len(), 3);
+
+        accept_player_bet(&mut state, &player_1, P::Check).unwrap();
+        accept_player_bet(&mut state, &player_2, P::Check).unwrap();
+        accept_player_bet(&mut state, &player_3, P::Check).unwrap();
+
+        assert_eq!(cards_on_table(&state).len(), 4);
+
+        accept_player_bet(&mut state, &player_1, P::Check).unwrap();
+        accept_player_bet(&mut state, &player_2, P::Check).unwrap();
+        accept_player_bet(&mut state, &player_3, P::Check).unwrap();
+
+        assert_eq!(cards_on_table(&state).len(), 5);
+
+        accept_player_bet(&mut state, &player_1, P::Check).unwrap();
+        accept_player_bet(&mut state, &player_2, P::Check).unwrap();
+        accept_player_bet(&mut state, &player_3, P::RaiseTo(200)).unwrap();
+        accept_player_bet(&mut state, &player_1, P::Call).unwrap();
+        accept_player_bet(&mut state, &player_2, P::Call).unwrap();
+
+        assert_eq!(state.status, state::GameStatus::Complete);
     }
 
     mod fixtures {
