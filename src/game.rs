@@ -37,14 +37,6 @@ pub(crate) fn spawn_game_worker(state: state::SharedState) {
             }
         };
 
-        let now_ms: u64 = now.into();
-        if now_ms - last_update > state::GAME_IDLE_TIMEOUT_SECONDS * 1000 {
-            info!("Game idle timeout, resetting game");
-            let mut state = state.write().await;
-            *state = state::State::default();
-            return;
-        }
-
         if let Some(player) = current_player {
             let expired = player.ttl.map(|ttl| ttl < now).unwrap_or(false);
             if expired {
