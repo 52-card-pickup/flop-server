@@ -65,7 +65,7 @@ pub(crate) struct GameClientRoom {
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CompletedGame {
-    pub(crate) winner_idx: usize,
+    pub(crate) winner_name: String,
     pub(crate) winning_hand: String,
     pub(crate) player_cards: Vec<((CardSuite, CardValue), (CardSuite, CardValue))>,
 }

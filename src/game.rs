@@ -617,12 +617,6 @@ pub(crate) fn completed_game(state: &state::State) -> Option<models::CompletedGa
         })
         .max_by_key(|(_, score)| score.clone())?;
 
-    let winner_idx = state
-        .players
-        .keys()
-        .position(|id| id == &winner.id)
-        .unwrap();
-
     let player_cards = state
         .players
         .values()
@@ -635,7 +629,7 @@ pub(crate) fn completed_game(state: &state::State) -> Option<models::CompletedGa
         .collect();
 
     Some(models::CompletedGame {
-        winner_idx,
+        winner_name: winner.name.clone(),
         winning_hand: winning_hand.strength().to_string(),
         player_cards,
     })
