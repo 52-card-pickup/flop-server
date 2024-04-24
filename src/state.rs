@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use crate::cards::{Card, Deck};
 
+use axum::body::Bytes;
 pub use id::PlayerId;
 use tokio::sync::RwLock;
 
@@ -41,6 +42,7 @@ pub struct Player {
     pub balance: u64,
     pub stake: u64,
     pub folded: bool,
+    pub photo: Option<(Bytes, uuid::Uuid)>,
     pub ttl: Option<dt::Instant>,
     pub cards: (Card, Card),
 }
