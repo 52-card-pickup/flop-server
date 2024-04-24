@@ -256,7 +256,7 @@ pub(crate) async fn knock_room(
 ) -> JsonResult<models::KnockResponse> {
     let response = match payload.which {
         models::KnockAction::Peek => {
-            let state = state.read().unwrap();
+            let state = state.read().await;
             models::KnockResponse {
                 state: game::game_phase(&state),
                 cards_on_table: state.round.cards_on_table.len(),
@@ -265,7 +265,7 @@ pub(crate) async fn knock_room(
             }
         }
         models::KnockAction::Nudge => {
-            let mut state = state.write().unwrap();
+            let mut state = state.write().await;
             let now = state::dt::Instant::default();
             let expiry = {
                 let mut when = now.clone();
@@ -281,7 +281,7 @@ pub(crate) async fn knock_room(
             }
         }
         models::KnockAction::Kick => {
-            let mut state = state.write().unwrap();
+            let mut state = state.write().await;
             let now = state::dt::Instant::default();
             let expiry = {
                 let mut when = now.clone();
