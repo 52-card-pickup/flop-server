@@ -250,8 +250,10 @@ pub mod ticker {
                 player_id: &PlayerId,
                 action: &str,
             ) -> String {
-                let player = state.players.get(player_id).unwrap();
-                format!("Player {} {}", player.name, action)
+                match state.players.get(player_id) {
+                    Some(player) => return format!("Player {} {}", player.name, action),
+                    None => return format!("Previous player {}", action),
+                }
             }
             match self {
                 Self::GameStarted => "Game started".to_string(),
@@ -285,18 +287,32 @@ pub mod ticker {
                 Self::SplitPotWinners(players, strength) => {
                     let players = players
                         .iter()
-                        .map(|player_id| state.players.get(player_id).unwrap().name.clone())
+                        .map(|player_id| {
+                            state
+                                .players
+                                .get(player_id)
+                                .map(|player| player.name.as_str())
+                                .unwrap_or_default()
+                        })
                         .collect::<Vec<_>>()
                         .join(", ");
                     format!("Players {} split pot with {:?}", players, strength)
                 }
                 Self::PaidPot(player_id, amount) => {
-                    let player = state.players.get(player_id).unwrap();
-                    format!("Player {} won £{} from pot", player.name, amount)
+                    let player = state
+                        .players
+                        .get(player_id)
+                        .map(|p| p.name.as_str())
+                        .unwrap_or_default();
+                    format!("Player {} won £{} from pot", player, amount)
                 }
                 Self::PlayerSentEmoji(player_id, emoji) => {
-                    let player = state.players.get(player_id).unwrap();
-                    format!("Player {}: {}", player.name, emoji)
+                    let player = state
+                        .players
+                        .get(player_id)
+                        .map(|p| p.name.as_str())
+                        .unwrap_or_default();
+                    format!("Player {}: {}", player, emoji)
                 }
             }
         }
