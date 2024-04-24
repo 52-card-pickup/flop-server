@@ -265,7 +265,12 @@ fn next_turn(state: &mut state::State, current_player_id: Option<&state::PlayerI
             return;
         }
         None if state.round.cards_on_table.is_empty() => {
-            let mut player_ids = state.players.keys().cloned().cycle();
+            let mut player_ids = state
+                .players
+                .iter()
+                .filter(|(_, p)| !p.folded && p.balance > 0)
+                .map(|(id, _)| id.clone())
+                .cycle();
             let small_blind_player = player_ids.next().unwrap();
             let big_blind_player = player_ids.next().unwrap();
             let next_player_id = player_ids.next();
