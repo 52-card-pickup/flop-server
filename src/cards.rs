@@ -82,7 +82,7 @@ impl Display for HandStrength {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {
             HandStrength::HighCard => "High Card",
-            HandStrength::OnePair => "  Pair",
+            HandStrength::OnePair => "Pair",
             HandStrength::TwoPair => "Two Pair",
             HandStrength::ThreeOfAKind => "Three of a Kind",
             HandStrength::Straight => "Straight",
@@ -316,7 +316,7 @@ pub enum CardValue {
     Ace,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Ord)]
 pub struct EvaluatedHand(HandStrength, [CardValue; 5]);
 
 impl EvaluatedHand {
