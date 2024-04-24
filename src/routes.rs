@@ -254,48 +254,12 @@ pub(crate) async fn knock_room(
     State(state): State<SharedState>,
     Json(payload): Json<models::KnockRequest>,
 ) -> JsonResult<models::KnockResponse> {
-    let response = match payload.which {
-        models::KnockAction::Peek => {
-            let state = state.read().await;
-            models::KnockResponse {
-                state: game::game_phase(&state),
-                cards_on_table: state.round.cards_on_table.len(),
-                players: state.players.len(),
-                retry_at: None,
-            }
-        }
-        models::KnockAction::Nudge => {
-            let mut state = state.write().await;
-            let now = state::dt::Instant::default();
-            let expiry = {
-                let mut when = now.clone();
-                when.add_seconds(30);
-                when
-            };
-            state.round.knocks.nudges.push_back(expiry);
-            models::KnockResponse {
-                state: game::game_phase(&state),
-                cards_on_table: state.round.cards_on_table.len(),
-                players: state.players.len(),
-                retry_at: None,
-            }
-        }
-        models::KnockAction::Kick => {
-            let mut state = state.write().await;
-            let now = state::dt::Instant::default();
-            let expiry = {
-                let mut when = now.clone();
-                when.add_seconds(60);
-                when
-            };
-            state.round.knocks.kicks.push_back(expiry);
-            models::KnockResponse {
-                state: game::game_phase(&state),
-                cards_on_table: state.round.cards_on_table.len(),
-                players: state.players.len(),
-                retry_at: Some(expiry.into()),
-            }
-        }
+    let action = payload.which.clone();
+    let mut state = state.write().await;
+    let response = match action {
+        models::KnockAction::Peek => game::peek_room(&mut state).await,
+        models::KnockAction::Nudge => game::nudge_room(&mut state).await,
+        models::KnockAction::Kick => game::kick_room(&mut state).await,
     };
     info!("Room knocked on: action = {:?}", payload.which);
     Ok(Json(response))

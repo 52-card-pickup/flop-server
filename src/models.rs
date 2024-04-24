@@ -14,7 +14,7 @@ pub(crate) struct JoinResponse {
     pub(crate) id: String,
 }
 
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum KnockAction {
     Peek,

@@ -248,6 +248,9 @@ pub mod ticker {
         Winner(PlayerId, cards::HandStrength),
         SplitPotWinners(Vec<PlayerId>, cards::HandStrength),
         PaidPot(PlayerId, u64),
+        RoomPeeked,
+        RoomNudged,
+        RoomKicked,
         PlayerPhotoUploaded(PlayerId),
         PlayerSentEmoji(PlayerId, emoji::TickerEmoji),
     }
@@ -318,6 +321,9 @@ pub mod ticker {
                         .unwrap_or_default();
                     format!("Player {} won £{} from pot", player, amount)
                 }
+                Self::RoomPeeked => "Someone peeked into the room".to_string(),
+                Self::RoomNudged => "Someone is nudging you to finish the game".to_string(),
+                Self::RoomKicked => "Someone is trying kicking you out of the room".to_string(),
                 Self::PlayerPhotoUploaded(player_id) => {
                     format_player_action(state, player_id, "added a photo")
                 }
@@ -390,10 +396,14 @@ pub mod ticker {
 
     impl Ticker {
         pub fn emit(&mut self, event: TickerEvent) {
-            self.emit_with_delay(event, 0);
+            self.emit_event(event, 0, super::TICKER_ITEM_TIMEOUT_SECONDS);
         }
 
         pub fn emit_with_delay(&mut self, event: TickerEvent, delay: u64) {
+            self.emit_event(event, delay, super::TICKER_ITEM_TIMEOUT_SECONDS);
+        }
+
+        pub fn emit_event(&mut self, event: TickerEvent, delay: u64, timeout: u64) {
             let instant = Instant::default().as_u64() + delay;
             let start = if let Some(last) = self.last_event {
                 let gap = instant.saturating_sub(last.as_u64());
@@ -402,7 +412,7 @@ pub mod ticker {
             } else {
                 instant
             };
-            let end = start + super::TICKER_ITEM_TIMEOUT_SECONDS * 1000;
+            let end = start + timeout * 1000;
             let (start, end): (Instant, Instant) = (start.into(), end.into());
             self.events.push(TickerItem {
                 seq_index: self.counter,
