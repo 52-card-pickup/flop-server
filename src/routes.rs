@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::{
     game, models,
     state::{self, SharedState},
@@ -81,7 +83,7 @@ pub(crate) async fn player(
 pub(crate) async fn get_player_photo(
     State(state): State<SharedState>,
     Path(player_id): Path<String>,
-    Query(hash): Query<Option<(String, String)>>,
+    Query(hash): Query<HashMap<String, String>>,
 ) -> Result<(header::HeaderMap, body::Bytes), StatusCode> {
     let state = state.read().await;
     let player = utils::validate_player(&player_id, &state)?;
@@ -93,7 +95,7 @@ pub(crate) async fn get_player_photo(
         header::CONTENT_DISPOSITION,
         HeaderValue::from_str("inline").unwrap(),
     );
-    if hash.map_or(false, |(key, _)| key == "hash") {
+    if hash.contains_key("hash") {
         headers.insert(
             header::ETAG,
             HeaderValue::from_str(&photo.1.to_string()).unwrap(),
