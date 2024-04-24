@@ -627,16 +627,17 @@ pub(crate) fn completed_game(state: &state::State) -> Option<models::CompletedGa
     if state.status != state::GameStatus::Complete {
         return None;
     }
-    let (winner, winning_hand) = state
+    let winner = match &state.round.cards_on_table {
+        x if x.len() == 0 => None,
+        cards_on_table => Some(
+            state
         .players
         .values()
-        .map(|p| {
-            (
-                p,
-                cards::Card::evaluate_hand(&p.cards, &state.round.cards_on_table),
-            )
-        })
-        .max_by_key(|(_, score)| score.clone())?;
+        .map(|p| (p, cards::Card::evaluate_hand(&p.cards, &cards_on_table)))
+                .map(|(p, score)| (p.name.as_str(), score))
+        .max_by_key(|(_, score)| *score)?,
+        ),
+    };
 
     let player_cards = state
         .players
@@ -650,8 +651,8 @@ pub(crate) fn completed_game(state: &state::State) -> Option<models::CompletedGa
         .collect();
 
     Some(models::CompletedGame {
-        winner_name: winner.name.clone(),
-        winning_hand: winning_hand.strength().to_string(),
+        winner_name: winner.map(|(name, _)| name.to_string()),
+        winning_hand: winner.map(|(_, score)| score.strength().to_string()),
         player_cards,
     })
 }
@@ -978,6 +979,9 @@ mod tests {
 
         let winner = state.players.get(&player_2).unwrap();
         assert_eq!(winner.balance, STARTING_BALANCE + SMALL_BLIND);
+
+        let completed = completed_game(&state).unwrap();
+        assert_eq!(completed.winning_hand, None);
     }
 
     #[test]
