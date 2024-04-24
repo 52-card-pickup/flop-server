@@ -218,6 +218,8 @@ pub mod dt {
 }
 
 pub mod ticker {
+    use std::borrow::Cow;
+
     use crate::cards;
 
     use super::{dt::Instant, BetAction, PlayerId};
@@ -259,23 +261,24 @@ pub mod ticker {
                 }
                 Self::PlayerFolded(player_id) => format_player_action(state, player_id, "folded"),
                 Self::PlayerBet(player_id, action) => {
-                    let action = match action {
-                        BetAction::Check => "checked".to_string(),
-                        BetAction::Call => "called".to_string(),
-                        BetAction::RaiseTo(amount) => format!("raised to {}", amount),
+                    let action: Cow<'static, str> = match action {
+                        BetAction::Check => "checked".into(),
+                        BetAction::Call => "called".into(),
+                        BetAction::RaiseTo(amount) => format!("raised to £{}", amount).into(),
                     };
                     format_player_action(state, player_id, &action)
                 }
                 Self::SmallBlindPosted(player_id) => {
-                    format_player_action(state, player_id, "posted small blind")
+                    format_player_action(state, player_id, "posted the small blind")
                 }
                 Self::BigBlindPosted(player_id) => {
-                    format_player_action(state, player_id, "posted big blind")
+                    format_player_action(state, player_id, "posted the big blind")
                 }
+                Self::CardsDealtToTable(1) => "Dealt another card".to_string(),
                 Self::CardsDealtToTable(count) => format!("Dealt {} cards to table", count),
                 Self::RoundComplete => "Round complete".to_string(),
                 Self::Winner(player_id, strength) => {
-                    format_player_action(state, player_id, &format!("won with {:?}", strength))
+                    format_player_action(state, player_id, &format!("won with {}", strength))
                 }
                 Self::SplitPotWinners(players, strength) => {
                     let players = players
@@ -324,8 +327,16 @@ pub mod ticker {
                 Self('⏳')
             }
 
+            pub fn thinking() -> Self {
+                Self('🤔')
+            }
+
             pub fn money() -> Self {
                 Self('💰')
+            }
+
+            pub fn angry() -> Self {
+                Self('😡')
             }
         }
     }
