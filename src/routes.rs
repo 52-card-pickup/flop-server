@@ -141,15 +141,17 @@ pub(crate) async fn post_player_photo(
         .players
         .get_mut(&player_id)
         .ok_or(StatusCode::NOT_FOUND)?;
-    let player_name = player.name.clone();
     let guid = uuid::Uuid::new_v4();
     player.photo = Some((data, guid));
+    state
+        .ticker
+        .emit(state::TickerEvent::PlayerPhotoUploaded(player_id.clone()));
 
+    state.last_update.set_now();
     info!(
         "Player {} uploaded photo: name = {}, size = {}",
-        player_name, name, size
+        player_id, name, size
     );
-
     Ok(Json(()))
 }
 

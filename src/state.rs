@@ -233,6 +233,7 @@ pub mod ticker {
         PlayerTurnTimeout(String),
         PlayerFolded(PlayerId),
         PlayerBet(PlayerId, BetAction),
+        DealerRotated(PlayerId),
         SmallBlindPosted(PlayerId),
         BigBlindPosted(PlayerId),
         CardsDealtToTable(usize),
@@ -240,6 +241,7 @@ pub mod ticker {
         Winner(PlayerId, cards::HandStrength),
         SplitPotWinners(Vec<PlayerId>, cards::HandStrength),
         PaidPot(PlayerId, u64),
+        PlayerPhotoUploaded(PlayerId),
         PlayerSentEmoji(PlayerId, emoji::TickerEmoji),
     }
 
@@ -271,6 +273,9 @@ pub mod ticker {
                         BetAction::RaiseTo(amount) => format!("raised to £{}", amount).into(),
                     };
                     format_player_action(state, player_id, &action)
+                }
+                Self::DealerRotated(player_id) => {
+                    format_player_action(state, player_id, "is the next dealer")
                 }
                 Self::SmallBlindPosted(player_id) => {
                     format_player_action(state, player_id, "posted the small blind")
@@ -305,6 +310,9 @@ pub mod ticker {
                         .map(|p| p.name.as_str())
                         .unwrap_or_default();
                     format!("Player {} won £{} from pot", player, amount)
+                }
+                Self::PlayerPhotoUploaded(player_id) => {
+                    format_player_action(state, player_id, "added a photo")
                 }
                 Self::PlayerSentEmoji(player_id, emoji) => {
                     let player = state

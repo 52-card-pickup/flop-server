@@ -457,10 +457,12 @@ fn complete_round(state: &mut state::State) {
         5 => {
             payout_game_winners(state);
             reset_players(state);
-            rotate_dealer(state);
-            state.status = state::GameStatus::Complete;
             state.round.raises.clear();
             state.round.calls.clear();
+            state.status = state::GameStatus::Complete;
+            state.ticker.emit(TickerEvent::RoundComplete);
+
+            rotate_dealer(state);
         }
         _ => unreachable!(),
     }
@@ -477,6 +479,9 @@ fn place_cards_on_table(state: &mut state::State, count: usize) {
 fn rotate_dealer(state: &mut state::State) {
     if let Some(old_dealer) = state.players.pop_first() {
         state.players.insert(old_dealer.0, old_dealer.1);
+
+        let dealer = state.players.keys().next().cloned().unwrap();
+        state.ticker.emit(TickerEvent::DealerRotated(dealer));
     }
 }
 
