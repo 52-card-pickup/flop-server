@@ -666,7 +666,7 @@ pub(crate) fn ticker(state: &state::State) -> Option<String> {
         item: &state::ticker::TickerItem,
         now: state::dt::Instant,
     ) -> String {
-        let start_offset_ms = item.start.as_u64().saturating_sub(now.as_u64());
+        let start_offset_ms = (item.start.as_u64() as i64) - (now.as_u64() as i64);
         let duration = item.end.as_u64().saturating_sub(item.start.as_u64());
         format!(
             "{}|{}|{}\x00{}",
@@ -683,7 +683,7 @@ pub(crate) fn ticker(state: &state::State) -> Option<String> {
         .iter()
         .map(|item| ticker_item(state, item, now))
         .collect();
-    Some(format!("{}{}", header, items.join("\n")))
+    Some(format!("{}\n{}", header, items.join("\n")))
 }
 
 pub(crate) fn completed_game(state: &state::State) -> Option<models::CompletedGame> {
