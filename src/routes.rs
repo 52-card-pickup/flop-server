@@ -241,8 +241,6 @@ pub(crate) async fn join(
     State(state): State<SharedState>,
     Json(payload): Json<models::JoinRequest>,
 ) -> JsonResult<models::JoinResponse> {
-    let mut state = state.write().await;
-
     if payload.name.is_empty()
         || payload.name.len() > 20
         || payload.name.contains(|c: char| c.is_control())
@@ -251,7 +249,10 @@ pub(crate) async fn join(
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    let id = match game::add_new_player(&mut state, &payload.name) {
+    let mut state = state.write().await;
+    let name = payload.name.replace(char::is_whitespace, " ");
+
+    let id = match game::add_new_player(&mut state, name.trim()) {
         Ok(id) => id,
         Err(err) => {
             info!("Player failed to join: {}", err);
