@@ -37,6 +37,26 @@ pub(crate) struct PlayerSendRequest {
     pub(crate) message: String,
 }
 
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PlayerAccountsResponse {
+    pub(crate) accounts: Vec<PlayerAccount>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PlayerAccount {
+    pub(crate) name: String,
+    pub(crate) account_id: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TransferRequest {
+    pub(crate) amount: u64,
+    pub(crate) to: String,
+}
+
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct PollQuery {
     pub since: Option<u64>,

@@ -43,6 +43,7 @@ pub struct Round {
 pub struct Player {
     pub name: String,
     pub id: PlayerId,
+    pub funds_token: String,
     pub balance: u64,
     pub stake: u64,
     pub folded: bool,
@@ -243,6 +244,7 @@ pub mod ticker {
         PaidPot(PlayerId, u64),
         PlayerPhotoUploaded(PlayerId),
         PlayerSentEmoji(PlayerId, emoji::TickerEmoji),
+        PlayerTransferredBalance(PlayerId, PlayerId, u64),
     }
 
     impl TickerEvent {
@@ -321,6 +323,19 @@ pub mod ticker {
                         .map(|p| p.name.as_str())
                         .unwrap_or_default();
                     format!("Player {}: {}", player, emoji)
+                }
+                Self::PlayerTransferredBalance(from, to, amount) => {
+                    let from = state
+                        .players
+                        .get(from)
+                        .map(|p| p.name.as_str())
+                        .unwrap_or_default();
+                    let to = state
+                        .players
+                        .get(to)
+                        .map(|p| p.name.as_str())
+                        .unwrap_or_default();
+                    format!("Player {} transferred £{} to {}", from, amount, to)
                 }
             }
         }

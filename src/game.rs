@@ -114,12 +114,14 @@ pub(crate) fn add_new_player(
     if state.players.len() >= state::MAX_PLAYERS {
         return Err("Room is full".to_string());
     }
+    let funds_token = uuid::Uuid::new_v4().hyphenated().to_string();
     let player_id = state::PlayerId::default();
     let card_1 = state.round.deck.pop().unwrap();
     let card_2 = state.round.deck.pop().unwrap();
     let player = state::Player {
         name: player_name.to_owned(),
         id: player_id.clone(),
+        funds_token: funds_token.split_once('-').unwrap().0.to_string(),
         balance: state::STARTING_BALANCE,
         stake: 0,
         folded: false,
@@ -724,11 +726,11 @@ pub(crate) fn completed_game(state: &state::State) -> Option<models::CompletedGa
         x if x.len() == 0 => None,
         cards_on_table => Some(
             state
-        .players
-        .values()
-        .map(|p| (p, cards::Card::evaluate_hand(&p.cards, &cards_on_table)))
+                .players
+                .values()
+                .map(|p| (p, cards::Card::evaluate_hand(&p.cards, &cards_on_table)))
                 .map(|(p, score)| (p.name.as_str(), score))
-        .max_by_key(|(_, score)| *score)?,
+                .max_by_key(|(_, score)| *score)?,
         ),
     };
 
@@ -837,6 +839,57 @@ pub(crate) fn reset_ttl(state: &mut state::State, id: &state::PlayerId) -> Resul
         },
         None => Err("Player not found".to_string()),
     }
+}
+
+pub(crate) fn transfer_funds(
+    state: &mut state::State,
+    player_id: &state::PlayerId,
+    payload: &models::TransferRequest,
+) -> Result<(), ()> {
+    let player_balance = state.players.get(&player_id).ok_or(())?.balance;
+    let remaining = player_balance.checked_sub(payload.amount).ok_or_else(|| {
+        info!(
+            "Player {} failed to transfer: insufficient funds",
+            player_id
+        );
+        ()
+    })?;
+    let destination_id = {
+        let destination_id = state
+            .players
+            .iter()
+            .find_map(|(id, p)| {
+                if p.funds_token == payload.to {
+                    Some(id.clone())
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| {
+                info!(
+                    "Player {} failed to transfer: destination not found",
+                    player_id
+                );
+                ()
+            })?;
+
+        let destination = state.players.get_mut(&destination_id).unwrap();
+        destination.balance += payload.amount;
+        destination.id.clone()
+    };
+    {
+        let player = state.players.get_mut(&player_id).unwrap();
+        player.balance = remaining;
+    }
+    state
+        .ticker
+        .emit(state::TickerEvent::PlayerTransferredBalance(
+            player_id.clone(),
+            destination_id,
+            payload.amount,
+        ));
+
+    Ok(())
 }
 
 pub(crate) fn call_amount(state: &state::State) -> Option<u64> {
@@ -1039,6 +1092,27 @@ mod tests {
 
         let winner = state.players.get(&player_2).unwrap();
         assert_eq!(winner.balance, STARTING_BALANCE + SMALL_BLIND);
+    }
+
+    #[test]
+    fn two_player_game_can_transfer_funds() {
+        let (mut state, (player_1, player_2)) =
+            fixtures::start_two_player_game(GameFixture::Round1);
+        let player_1_balance = state.players.get(&player_1).unwrap().balance;
+        let player_2_balance = state.players.get(&player_2).unwrap().balance;
+
+        let transfer_request = models::TransferRequest {
+            to: state.players.get(&player_2).unwrap().funds_token.clone(),
+            amount: 100,
+        };
+
+        transfer_funds(&mut state, &player_1, &transfer_request).unwrap();
+
+        let player_1_balance_after_transfer = state.players.get(&player_1).unwrap().balance;
+        let player_2_balance_after_transfer = state.players.get(&player_2).unwrap().balance;
+
+        assert_eq!(player_1_balance - 100, player_1_balance_after_transfer);
+        assert_eq!(player_2_balance + 100, player_2_balance_after_transfer);
     }
 
     #[test]

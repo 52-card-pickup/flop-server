@@ -30,6 +30,11 @@ pub(crate) fn api_routes(state: state::SharedState) -> ApiRouter {
             post_with(player_send, docs::player_send),
         )
         .api_route(
+            "/player/:player_id/transfer",
+            get_with(get_player_transfer, docs::get_player_transfer)
+                .post_with(post_player_transfer, docs::post_player_transfer),
+        )
+        .api_route(
             "/player/:player_id/photo",
             get_with(get_player_photo, docs::get_player_photo)
                 .post_with(post_player_photo, docs::post_player_photo),
@@ -120,6 +125,50 @@ pub(crate) async fn player_send(
 
     state.last_update.set_now();
     info!("Player {} sent message", player_id);
+    Ok(Json(()))
+}
+
+pub(crate) async fn get_player_transfer(
+    State(state): State<SharedState>,
+    Path(player_id): Path<String>,
+) -> JsonResult<models::PlayerAccountsResponse> {
+    let state = state.read().await;
+    let player = utils::validate_player(&player_id, &state)?;
+
+    let accounts = state
+        .players
+        .values()
+        .filter(|p| p.id != player.id)
+        .map(|p| models::PlayerAccount {
+            name: p.name.clone(),
+            account_id: p.funds_token.clone(),
+        })
+        .collect();
+
+    Ok(Json(models::PlayerAccountsResponse { accounts }))
+}
+
+pub(crate) async fn post_player_transfer(
+    State(state): State<SharedState>,
+    Path(player_id): Path<String>,
+    Json(payload): Json<models::TransferRequest>,
+) -> JsonResult<()> {
+    let mut state = state.write().await;
+    let player = utils::validate_player(&player_id, &state)?;
+
+    if payload.amount == 0 {
+        info!("Player {} failed to transfer: amount is zero", player_id);
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    game::transfer_funds(&mut state, &player.id, &payload).map_err(|_| StatusCode::BAD_REQUEST)?;
+
+    info!(
+        "Player {} transferred {} to player {}",
+        player.id, payload.amount, payload.to
+    );
+
+    state.last_update.set_now();
     Ok(Json(()))
 }
 
@@ -345,6 +394,14 @@ pub mod docs {
 
     pub fn player_send(op: TransformOperation) -> TransformOperation {
         op.description("Send a message to the game room.")
+    }
+
+    pub fn get_player_transfer(op: TransformOperation) -> TransformOperation {
+        op.description("Get the account details of other players.")
+    }
+
+    pub fn post_player_transfer(op: TransformOperation) -> TransformOperation {
+        op.description("Transfer funds to another player.")
     }
 
     pub fn get_player_photo(op: TransformOperation) -> TransformOperation {
