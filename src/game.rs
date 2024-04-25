@@ -724,11 +724,11 @@ pub(crate) fn completed_game(state: &state::State) -> Option<models::CompletedGa
         x if x.len() == 0 => None,
         cards_on_table => Some(
             state
-        .players
-        .values()
-        .map(|p| (p, cards::Card::evaluate_hand(&p.cards, &cards_on_table)))
+                .players
+                .values()
+                .map(|p| (p, cards::Card::evaluate_hand(&p.cards, &cards_on_table)))
                 .map(|(p, score)| (p.name.as_str(), score))
-        .max_by_key(|(_, score)| *score)?,
+                .max_by_key(|(_, score)| *score)?,
         ),
     };
 
@@ -771,6 +771,50 @@ fn player_photo_url(p: &state::Player) -> Option<String> {
     let (hash, _) = guid.split_once('-').expect("uuid should have hyphen");
 
     Some(format!("player/{}/photo?hash={}", p.id, hash))
+}
+
+pub(crate) async fn peek_room(state: &mut state::State) -> models::KnockResponse {
+    state.ticker.emit(TickerEvent::RoomPeeked);
+    models::KnockResponse {
+        state: game_phase(state),
+        cards_on_table: state.round.cards_on_table.len(),
+        players: state.players.len(),
+        retry_at: None,
+    }
+}
+
+pub(crate) async fn nudge_room(state: &mut state::State) -> models::KnockResponse {
+    let now = state::dt::Instant::default();
+    let expiry = {
+        let mut when = now.clone();
+        when.add_seconds(30);
+        when
+    };
+    state.round.knocks.nudges.push_back(expiry);
+    state.ticker.emit_event(TickerEvent::RoomNudged, 0, 30_000);
+    models::KnockResponse {
+        state: game_phase(state),
+        cards_on_table: state.round.cards_on_table.len(),
+        players: state.players.len(),
+        retry_at: None,
+    }
+}
+
+pub(crate) async fn kick_room(state: &mut state::State) -> models::KnockResponse {
+    let now = state::dt::Instant::default();
+    let expiry = {
+        let mut when = now.clone();
+        when.add_seconds(60);
+        when
+    };
+    state.round.knocks.kicks.push_back(expiry);
+    state.ticker.emit_event(TickerEvent::RoomKicked, 0, 60_000);
+    models::KnockResponse {
+        state: game_phase(state),
+        cards_on_table: state.round.cards_on_table.len(),
+        players: state.players.len(),
+        retry_at: Some(expiry.into()),
+    }
 }
 
 pub(crate) fn fold_player(
