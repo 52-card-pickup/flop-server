@@ -37,6 +37,7 @@ pub struct Round {
     pub players_turn: Option<PlayerId>,
     pub raises: Vec<(PlayerId, u64)>,
     pub calls: Vec<(PlayerId, u64)>,
+    pub folded: bool,
 }
 
 #[derive(Clone)]

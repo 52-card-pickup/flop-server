@@ -13,7 +13,9 @@ pub(crate) fn spawn_game_worker(state: state::SharedState) {
             let state = state.read().await;
             let last_update = state.last_update.as_u64();
             let players_turn = state.round.players_turn.clone();
-            let current_player = players_turn.and_then(|id| state.players.get(&id)).cloned();
+            let current_player = players_turn
+                .and_then(|id| state.players.get(&id))
+                .map(|p| (p.id.clone(), p.ttl));
             let ticker_expired = state.ticker.has_expired_items(now);
 
             (last_update, current_player, state.status, ticker_expired)
@@ -41,29 +43,13 @@ pub(crate) fn spawn_game_worker(state: state::SharedState) {
             }
         };
 
-        if let Some(player) = current_player {
-            let expired = player.ttl.map(|ttl| ttl < now).unwrap_or(false);
+        if let Some((player_id, player_ttl)) = current_player {
+            let expired = player_ttl.map(|ttl| ttl < now).unwrap_or(false);
             if expired {
-                info!("Player {} turn expired", player.id);
+                info!("Player {} turn expired", player_id);
                 let mut state = state.write().await;
 
-                fold_player(&mut state, &player.id).unwrap();
-
-                // TODO: notify player, soft kick
-                if let Some(player) = state.players.remove(&player.id) {
-                    info!("Player {} removed from game", player.id);
-                    state
-                        .ticker
-                        .emit(TickerEvent::PlayerTurnTimeout(player.name));
-                }
-                if state.players.len() < 2 {
-                    info!("Not enough players, pausing game until more players join");
-                    state.status = state::GameStatus::Joining;
-                    state.round = state::Round::default();
-                    for player in state.players.values_mut() {
-                        player.ttl = None;
-                    }
-                }
+                kick_player(&mut state, player_id);
                 state.last_update.set_now();
             }
         }
@@ -92,6 +78,7 @@ pub(crate) fn start_game(state: &mut state::State) -> Result<(), String> {
 
     state.round.cards_on_table.clear();
     state.round.pot = 0;
+state.round.folded = false;
     reset_players(state);
     next_turn(state, None);
     if state.status == state::GameStatus::Complete {
@@ -132,6 +119,44 @@ pub(crate) fn add_new_player(
         .ticker
         .emit(TickerEvent::PlayerJoined(player_id.clone()));
     Ok(player_id)
+}
+
+fn kick_player(state: &mut state::State, player_id: state::PlayerId) {
+    let original_player_turn =
+        std::mem::replace(&mut state.round.players_turn, Some(player_id.clone()));
+    fold_player(state, &player_id).unwrap();
+    state.round.players_turn = original_player_turn;
+
+    // TODO: notify player, soft kick
+    if state.players.len() > 2 {
+        if let Some(player) = state.players.remove(&player_id) {
+            info!("Player {} removed from game", player_id);
+            state
+                .ticker
+                .emit(TickerEvent::PlayerTurnTimeout(player.name));
+        }
+    } else {
+        let player_name = match state.players.get_mut(&player_id) {
+            Some(player) => {
+                player.ttl = None;
+                Some(player.name.clone())
+            }
+            None => None,
+        };
+        if let Some(player_name) = player_name {
+            state
+                .ticker
+                .emit(TickerEvent::PlayerTurnTimeout(player_name));
+        }
+    }
+    if state.players.len() < 2 {
+        info!("Not enough players, pausing game until more players join");
+        state.status = state::GameStatus::Joining;
+        state.round = state::Round::default();
+        for player in state.players.values_mut() {
+            player.ttl = None;
+        }
+    }
 }
 
 pub(crate) fn accept_player_bet(
@@ -720,9 +745,10 @@ pub(crate) fn completed_game(state: &state::State) -> Option<models::CompletedGa
     if state.status != state::GameStatus::Complete {
         return None;
     }
-    let winner = match &state.round.cards_on_table {
-        x if x.len() == 0 => None,
-        cards_on_table => Some(
+    let winner = match (&state.round.cards_on_table, state.round.folded) {
+        (_, true) => None,
+        (x, _) if x.len() == 0 => None,
+        (cards_on_table, _) => Some(
             state
         .players
         .values()
@@ -732,7 +758,10 @@ pub(crate) fn completed_game(state: &state::State) -> Option<models::CompletedGa
         ),
     };
 
-    let player_cards = state
+    let player_cards = if state.round.folded {
+        vec![]
+    } else {
+        state
         .players
         .values()
         .map(|p| {
@@ -741,7 +770,8 @@ pub(crate) fn completed_game(state: &state::State) -> Option<models::CompletedGa
                 (p.cards.1.suite.clone(), p.cards.1.value.clone()),
             )
         })
-        .collect();
+        .collect()
+    };
 
     Some(models::CompletedGame {
         winner_name: winner.map(|(name, _)| name.to_string()),
@@ -801,6 +831,7 @@ pub(crate) fn fold_player(
             let pot = state.round.pot;
             only_player_left.balance += pot;
             state.round.pot = 0;
+state.round.folded = true;
 
             state
                 .ticker
@@ -1084,6 +1115,7 @@ mod tests {
 
         let completed = completed_game(&state).unwrap();
         assert_eq!(completed.winning_hand, None);
+assert_eq!(completed.player_cards.len(), 0);
     }
 
     #[test]
