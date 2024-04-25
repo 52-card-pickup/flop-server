@@ -765,10 +765,12 @@ pub(crate) fn completed_game(state: &state::State) -> Option<models::CompletedGa
         .players
         .values()
         .map(|p| {
+(!p.folded).then(|| {
             (
                 (p.cards.0.suite.clone(), p.cards.0.value.clone()),
                 (p.cards.1.suite.clone(), p.cards.1.value.clone()),
             )
+})
         })
         .collect()
     };

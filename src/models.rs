@@ -68,7 +68,7 @@ pub(crate) struct GameClientRoom {
 pub(crate) struct CompletedGame {
     pub(crate) winner_name: Option<String>,
     pub(crate) winning_hand: Option<String>,
-    pub(crate) player_cards: Vec<((CardSuite, CardValue), (CardSuite, CardValue))>,
+    pub(crate) player_cards: Vec<Option<((CardSuite, CardValue), (CardSuite, CardValue))>>,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
