@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use crate::cards::{Card, Deck};
 
+use axum::body::Bytes;
 pub use id::PlayerId;
 pub use ticker::TickerEvent;
 use tokio::sync::RwLock;
@@ -45,6 +46,7 @@ pub struct Player {
     pub balance: u64,
     pub stake: u64,
     pub folded: bool,
+    pub photo: Option<(Bytes, uuid::Uuid)>,
     pub ttl: Option<dt::Instant>,
     pub cards: (Card, Card),
 }
@@ -231,6 +233,7 @@ pub mod ticker {
         PlayerTurnTimeout(String),
         PlayerFolded(PlayerId),
         PlayerBet(PlayerId, BetAction),
+        DealerRotated(PlayerId),
         SmallBlindPosted(PlayerId),
         BigBlindPosted(PlayerId),
         CardsDealtToTable(usize),
@@ -238,6 +241,7 @@ pub mod ticker {
         Winner(PlayerId, cards::HandStrength),
         SplitPotWinners(Vec<PlayerId>, cards::HandStrength),
         PaidPot(PlayerId, u64),
+        PlayerPhotoUploaded(PlayerId),
         PlayerSentEmoji(PlayerId, emoji::TickerEmoji),
     }
 
@@ -248,8 +252,10 @@ pub mod ticker {
                 player_id: &PlayerId,
                 action: &str,
             ) -> String {
-                let player = state.players.get(player_id).unwrap();
-                format!("Player {} {}", player.name, action)
+                match state.players.get(player_id) {
+                    Some(player) => return format!("Player {} {}", player.name, action),
+                    None => return format!("Previous player {}", action),
+                }
             }
             match self {
                 Self::GameStarted => "Game started".to_string(),
@@ -268,6 +274,9 @@ pub mod ticker {
                     };
                     format_player_action(state, player_id, &action)
                 }
+                Self::DealerRotated(player_id) => {
+                    format_player_action(state, player_id, "is the next dealer")
+                }
                 Self::SmallBlindPosted(player_id) => {
                     format_player_action(state, player_id, "posted the small blind")
                 }
@@ -283,18 +292,35 @@ pub mod ticker {
                 Self::SplitPotWinners(players, strength) => {
                     let players = players
                         .iter()
-                        .map(|player_id| state.players.get(player_id).unwrap().name.clone())
+                        .map(|player_id| {
+                            state
+                                .players
+                                .get(player_id)
+                                .map(|player| player.name.as_str())
+                                .unwrap_or_default()
+                        })
                         .collect::<Vec<_>>()
                         .join(", ");
                     format!("Players {} split pot with {:?}", players, strength)
                 }
                 Self::PaidPot(player_id, amount) => {
-                    let player = state.players.get(player_id).unwrap();
-                    format!("Player {} won £{} from pot", player.name, amount)
+                    let player = state
+                        .players
+                        .get(player_id)
+                        .map(|p| p.name.as_str())
+                        .unwrap_or_default();
+                    format!("Player {} won £{} from pot", player, amount)
+                }
+                Self::PlayerPhotoUploaded(player_id) => {
+                    format_player_action(state, player_id, "added a photo")
                 }
                 Self::PlayerSentEmoji(player_id, emoji) => {
-                    let player = state.players.get(player_id).unwrap();
-                    format!("Player {}: {}", player.name, emoji)
+                    let player = state
+                        .players
+                        .get(player_id)
+                        .map(|p| p.name.as_str())
+                        .unwrap_or_default();
+                    format!("Player {}: {}", player, emoji)
                 }
             }
         }
