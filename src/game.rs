@@ -78,7 +78,7 @@ pub(crate) fn start_game(state: &mut state::State) -> Result<(), String> {
 
     state.round.cards_on_table.clear();
     state.round.pot = 0;
-state.round.folded = false;
+    state.round.folded = false;
     reset_players(state);
     next_turn(state, None);
     if state.status == state::GameStatus::Complete {
@@ -750,11 +750,11 @@ pub(crate) fn completed_game(state: &state::State) -> Option<models::CompletedGa
         (x, _) if x.len() == 0 => None,
         (cards_on_table, _) => Some(
             state
-        .players
-        .values()
-        .map(|p| (p, cards::Card::evaluate_hand(&p.cards, &cards_on_table)))
+                .players
+                .values()
+                .map(|p| (p, cards::Card::evaluate_hand(&p.cards, &cards_on_table)))
                 .map(|(p, score)| (p.name.as_str(), score))
-        .max_by_key(|(_, score)| *score)?,
+                .max_by_key(|(_, score)| *score)?,
         ),
     };
 
@@ -762,17 +762,17 @@ pub(crate) fn completed_game(state: &state::State) -> Option<models::CompletedGa
         vec![]
     } else {
         state
-        .players
-        .values()
-        .map(|p| {
-(!p.folded).then(|| {
-            (
-                (p.cards.0.suite.clone(), p.cards.0.value.clone()),
-                (p.cards.1.suite.clone(), p.cards.1.value.clone()),
-            )
-})
-        })
-        .collect()
+            .players
+            .values()
+            .map(|p| {
+                (!p.folded).then(|| {
+                    (
+                        (p.cards.0.suite.clone(), p.cards.0.value.clone()),
+                        (p.cards.1.suite.clone(), p.cards.1.value.clone()),
+                    )
+                })
+            })
+            .collect()
     };
 
     Some(models::CompletedGame {
@@ -833,7 +833,7 @@ pub(crate) fn fold_player(
             let pot = state.round.pot;
             only_player_left.balance += pot;
             state.round.pot = 0;
-state.round.folded = true;
+            state.round.folded = true;
 
             state
                 .ticker
@@ -1117,7 +1117,7 @@ mod tests {
 
         let completed = completed_game(&state).unwrap();
         assert_eq!(completed.winning_hand, None);
-assert_eq!(completed.player_cards.len(), 0);
+        assert_eq!(completed.player_cards.len(), 0);
     }
 
     #[test]
