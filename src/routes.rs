@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use crate::{
     game, models,
@@ -107,7 +107,8 @@ pub(crate) async fn get_player_photo(
         );
     }
 
-    Ok((headers, photo.clone().0.into()))
+    let bytes = (*photo.0).clone();
+    Ok((headers, bytes.into()))
 }
 
 pub(crate) async fn post_player_photo(
@@ -144,7 +145,7 @@ pub(crate) async fn post_player_photo(
         .get_mut(&player_id)
         .ok_or(StatusCode::NOT_FOUND)?;
     let guid = uuid::Uuid::new_v4();
-    player.photo = Some((data, guid));
+    player.photo = Some((Arc::new(data), guid));
     state
         .ticker
         .emit(state::TickerEvent::PlayerPhotoUploaded(player_id.clone()));
