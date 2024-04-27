@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use crate::cards::{Card, Deck};
 
+use axum::body::Bytes;
 pub use id::PlayerId;
+pub use ticker::TickerEvent;
 use tokio::sync::RwLock;
 
 use self::players::Players;
@@ -11,6 +13,8 @@ pub type SharedState = Arc<RwLock<State>>;
 
 pub const STARTING_BALANCE: u64 = 1000;
 pub const STARTING_SMALL_BLIND: u64 = 10;
+pub const TICKER_ITEM_TIMEOUT_SECONDS: u64 = 10;
+pub const TICKER_ITEM_GAP_MILLISECONDS: u64 = 500;
 pub const PLAYER_TURN_TIMEOUT_SECONDS: u64 = 60;
 pub const GAME_IDLE_TIMEOUT_SECONDS: u64 = 300;
 pub const MAX_PLAYERS: usize = 8;
@@ -19,6 +23,7 @@ pub struct State {
     pub players: Players,
     pub round: Round,
     pub last_update: dt::SignalInstant,
+    pub ticker: ticker::Ticker,
     pub status: GameStatus,
     pub ballot: Option<ballot::Ballot>,
     pub small_blind: u64,
@@ -34,6 +39,7 @@ impl Default for State {
             ballot: None,
             small_blind: STARTING_SMALL_BLIND,
             action_queue: Default::default(),
+            ticker: Default::default(),
         }
     }
 }
@@ -55,6 +61,7 @@ pub struct Player {
     pub balance: u64,
     pub stake: u64,
     pub folded: bool,
+    pub photo: Option<(Bytes, uuid::Uuid)>,
     pub ttl: Option<dt::Instant>,
     pub cards: (Card, Card),
 }
@@ -124,7 +131,7 @@ pub mod dt {
         }
 
         pub fn as_u64(&self) -> u64 {
-            self.0
+            self.0.into()
         }
 
         fn now_ms() -> u64 {
@@ -227,6 +234,301 @@ pub mod dt {
 
                 assert!(receiver.is_some());
             }
+        }
+    }
+}
+
+pub mod ticker {
+    use std::borrow::Cow;
+
+    use crate::cards;
+
+    use super::{dt::Instant, BetAction, PlayerId};
+
+    #[derive(Debug, Clone)]
+    pub enum TickerEvent {
+        GameStarted,
+        PlayerJoined(PlayerId),
+        PlayerTurnTimeout(String),
+        PlayerFolded(PlayerId),
+        PlayerBet(PlayerId, BetAction),
+        DealerRotated(PlayerId),
+        SmallBlindPosted(PlayerId),
+        BigBlindPosted(PlayerId),
+        CardsDealtToTable(usize),
+        RoundComplete,
+        Winner(PlayerId, cards::HandStrength),
+        SplitPotWinners(Vec<PlayerId>, cards::HandStrength),
+        PaidPot(PlayerId, u64),
+        PlayerPhotoUploaded(PlayerId),
+        PlayerSentEmoji(PlayerId, emoji::TickerEmoji),
+    }
+
+    impl TickerEvent {
+        pub fn format(&self, state: &super::State) -> String {
+            fn format_player_action(
+                state: &super::State,
+                player_id: &PlayerId,
+                action: &str,
+            ) -> String {
+                match state.players.get(player_id) {
+                    Some(player) => return format!("Player {} {}", player.name, action),
+                    None => return format!("Previous player {}", action),
+                }
+            }
+            match self {
+                Self::GameStarted => "Game started".to_string(),
+                Self::PlayerJoined(player_id) => {
+                    format_player_action(state, player_id, "joined the game")
+                }
+                Self::PlayerTurnTimeout(player_name) => {
+                    format!("Player {} timed out", player_name)
+                }
+                Self::PlayerFolded(player_id) => format_player_action(state, player_id, "folded"),
+                Self::PlayerBet(player_id, action) => {
+                    let action: Cow<'static, str> = match action {
+                        BetAction::Check => "checked".into(),
+                        BetAction::Call => "called".into(),
+                        BetAction::RaiseTo(amount) => format!("raised to £{}", amount).into(),
+                    };
+                    format_player_action(state, player_id, &action)
+                }
+                Self::DealerRotated(player_id) => {
+                    format_player_action(state, player_id, "is the next dealer")
+                }
+                Self::SmallBlindPosted(player_id) => {
+                    format_player_action(state, player_id, "posted the small blind")
+                }
+                Self::BigBlindPosted(player_id) => {
+                    format_player_action(state, player_id, "posted the big blind")
+                }
+                Self::CardsDealtToTable(1) => "Dealt another card".to_string(),
+                Self::CardsDealtToTable(count) => format!("Dealt {} cards to table", count),
+                Self::RoundComplete => "Round complete".to_string(),
+                Self::Winner(player_id, strength) => {
+                    format_player_action(state, player_id, &format!("won with {}", strength))
+                }
+                Self::SplitPotWinners(players, strength) => {
+                    let players = players
+                        .iter()
+                        .map(|player_id| {
+                            state
+                                .players
+                                .get(player_id)
+                                .map(|player| player.name.as_str())
+                                .unwrap_or_default()
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("Players {} split pot with {:?}", players, strength)
+                }
+                Self::PaidPot(player_id, amount) => {
+                    let player = state
+                        .players
+                        .get(player_id)
+                        .map(|p| p.name.as_str())
+                        .unwrap_or_default();
+                    format!("Player {} won £{} from pot", player, amount)
+                }
+                Self::PlayerPhotoUploaded(player_id) => {
+                    format_player_action(state, player_id, "added a photo")
+                }
+                Self::PlayerSentEmoji(player_id, emoji) => {
+                    let player = state
+                        .players
+                        .get(player_id)
+                        .map(|p| p.name.as_str())
+                        .unwrap_or_default();
+                    format!("Player {}: {}", player, emoji)
+                }
+            }
+        }
+    }
+
+    pub mod emoji {
+        #[derive(Debug, Clone, Copy)]
+        pub struct TickerEmoji(char);
+
+        impl std::fmt::Display for TickerEmoji {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                <char as std::fmt::Display>::fmt(&self.0, f)
+            }
+        }
+
+        impl TickerEmoji {
+            pub fn thumbs_up() -> Self {
+                Self('👍')
+            }
+
+            pub fn thumbs_down() -> Self {
+                Self('👎')
+            }
+
+            pub fn clapping() -> Self {
+                Self('👏')
+            }
+
+            pub fn time() -> Self {
+                Self('⏳')
+            }
+
+            pub fn thinking() -> Self {
+                Self('🤔')
+            }
+
+            pub fn money() -> Self {
+                Self('💰')
+            }
+
+            pub fn angry() -> Self {
+                Self('😡')
+            }
+        }
+    }
+
+    pub struct TickerItem {
+        pub seq_index: usize,
+        pub start: Instant,
+        pub end: Instant,
+        pub payload: TickerEvent,
+    }
+
+    #[derive(Default)]
+    pub struct Ticker {
+        events: Vec<TickerItem>,
+        counter: usize,
+        last_event: Option<Instant>,
+    }
+
+    impl Ticker {
+        pub fn emit(&mut self, event: TickerEvent) {
+            self.emit_with_delay(event, 0);
+        }
+
+        pub fn emit_with_delay(&mut self, event: TickerEvent, delay: u64) {
+            let instant = Instant::default().as_u64() + delay;
+            let start = if let Some(last) = self.last_event {
+                let gap = instant.saturating_sub(last.as_u64());
+                let gap = gap.max(super::TICKER_ITEM_GAP_MILLISECONDS);
+                last.as_u64() + gap
+            } else {
+                instant
+            };
+            let end = start + super::TICKER_ITEM_TIMEOUT_SECONDS * 1000;
+            let (start, end): (Instant, Instant) = (start.into(), end.into());
+            self.events.push(TickerItem {
+                seq_index: self.counter,
+                start,
+                end,
+                payload: event,
+            });
+            self.counter += 1;
+            self.last_event = Some(start);
+        }
+
+        pub fn clear_expired_items(&mut self, now: Instant) {
+            self.events.retain(|item| {
+                let expired = item.end.as_u64() <= now.as_u64();
+                !expired
+            });
+        }
+
+        pub fn has_expired_items(&self, now: Instant) -> bool {
+            self.events
+                .iter()
+                .any(|item| item.end.as_u64() <= now.as_u64())
+        }
+
+        pub fn len(&self) -> usize {
+            self.events.len()
+        }
+
+        pub fn iter(&self) -> impl Iterator<Item = &TickerItem> {
+            self.events.iter()
+        }
+
+        pub fn active_items(&self, now: Instant) -> impl Iterator<Item = &TickerItem> {
+            self.events.iter().filter(move |item| {
+                item.start.as_u64() <= now.as_u64() && item.end.as_u64() > now.as_u64()
+            })
+        }
+
+        pub fn timeout_ms(&self) -> u64 {
+            super::TICKER_ITEM_TIMEOUT_SECONDS * 1000
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn ticker_emits_events() {
+            let mut ticker = Ticker::default();
+            ticker.emit(TickerEvent::GameStarted);
+            ticker.emit(TickerEvent::PlayerJoined(PlayerId::default()));
+
+            assert_eq!(ticker.events.len(), 2);
+        }
+
+        #[test]
+        fn ticker_clears_expired_items() {
+            let mut ticker = Ticker::default();
+            ticker.emit(TickerEvent::GameStarted);
+            ticker.emit_with_delay(TickerEvent::PlayerJoined(PlayerId::default()), 240_000);
+
+            assert_eq!(ticker.events.len(), 2);
+
+            let soon = Instant::default().as_u64() + 120_000;
+            ticker.clear_expired_items(Instant::from(soon));
+
+            assert_eq!(ticker.events.len(), 1);
+        }
+
+        #[test]
+        fn ticker_checks_for_expired_items() {
+            let mut ticker = Ticker::default();
+            ticker.emit(TickerEvent::GameStarted);
+            ticker.emit_with_delay(TickerEvent::PlayerJoined(PlayerId::default()), 1000);
+
+            let soon = Instant::default().as_u64() + 120_000;
+            assert!(ticker.has_expired_items(Instant::from(soon)));
+        }
+
+        #[test]
+        fn ticker_emit_delayed_events() {
+            let mut ticker = Ticker::default();
+            ticker.emit(TickerEvent::GameStarted);
+            ticker.emit_with_delay(TickerEvent::PlayerJoined(PlayerId::default()), 1000);
+            ticker.emit_with_delay(TickerEvent::PlayerJoined(PlayerId::default()), 3000);
+
+            let now = Instant::default().as_u64();
+            let active_items = ticker.active_items(Instant::from(now)).count();
+            assert_eq!(active_items, 1);
+
+            let soon = now + 2000;
+            let active_items = ticker.active_items(Instant::from(soon)).count();
+            assert_eq!(active_items, 2);
+
+            let soon = now + 4000;
+            let active_items = ticker.active_items(Instant::from(soon)).count();
+            assert_eq!(active_items, 3);
+        }
+
+        #[test]
+        fn ticker_emits_events_with_gap() {
+            let mut ticker = Ticker::default();
+            ticker.emit(TickerEvent::GameStarted);
+            ticker.emit(TickerEvent::PlayerJoined(PlayerId::default()));
+            ticker.emit(TickerEvent::PlayerJoined(PlayerId::default()));
+
+            let now = Instant::default().as_u64();
+            let active_items = ticker.active_items(Instant::from(now)).count();
+            assert_eq!(active_items, 1);
+
+            let soon = now + 2000;
+            let active_items = ticker.active_items(Instant::from(soon)).count();
+            assert_eq!(active_items, 3);
         }
     }
 }

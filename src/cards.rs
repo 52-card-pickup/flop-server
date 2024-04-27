@@ -316,7 +316,7 @@ pub enum CardValue {
     Ace,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Ord)]
 pub struct EvaluatedHand(HandStrength, [CardValue; 5]);
 
 impl EvaluatedHand {
