@@ -295,7 +295,12 @@ fn next_turn(state: &mut state::State, current_player_id: Option<&state::PlayerI
 
             next_player_id
         }
-        None => state.players.keys().cloned().next(),
+        None => state
+            .players
+            .keys()
+            .cloned()
+            .filter(|id| !state.players.get(id).unwrap().folded)
+            .next(),
     };
 
     match next_player_id
@@ -1503,6 +1508,19 @@ mod tests {
             player_cast_vote_in_ballot(&mut state, &player_1, true),
             Err("Player has already voted".to_string())
         );
+    }
+    fn folded_players_dont_have_turns_in_further_rounds() {
+        let (mut state, (player_1, player_2, player_3)) = fixtures::start_three_player_game();
+        assert_eq!(cards_on_table(&state).len(), 0);
+
+        accept_player_bet(&mut state, &player_3, P::Call).unwrap();
+        fold_player(&mut state, &player_1).expect("R2-P1");
+        accept_player_bet(&mut state, &player_2, P::Check).unwrap();
+
+        assert_eq!(cards_on_table(&state).len(), 3);
+
+        // ensure player 1 does not take a turn given they have folded
+        accept_player_bet(&mut state, &player_2, P::Check).unwrap();
     }
 
     mod fixtures {
