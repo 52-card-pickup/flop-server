@@ -49,6 +49,8 @@ pub(crate) struct GamePlayerState {
     pub(crate) turn_expires_dt: Option<u64>,
     pub(crate) last_update: u64,
     pub(crate) current_round_stake: u64,
+    pub(crate) ballot_details: Option<BallotDetails>,
+    pub(crate) start_ballot_options: Option<StartBallotChoices>,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -88,4 +90,43 @@ pub(crate) enum GamePhase {
     Waiting,
     Playing,
     Complete,
+}
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum BallotAction {
+    DoubleBlinds,
+    KickPlayer(String),
+}
+
+#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema, Clone)]
+pub struct KickPlayerOption {
+    pub name: String,
+    pub id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema, Clone)]
+pub struct StartBallotChoices {
+    pub kick_player: Vec<KickPlayerOption>,
+    pub double_blinds: bool,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CastVoteRequest {
+    pub(crate) player_id: String,
+    pub(crate) vote: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BallotDetails {
+    pub(crate) action: BallotAction,
+    pub(crate) expires_dt: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct StartBallot {
+    pub(crate) action: BallotAction,
 }
