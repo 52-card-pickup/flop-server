@@ -241,7 +241,7 @@ pub mod dt {
 pub mod ticker {
     use std::borrow::Cow;
 
-    use crate::cards;
+    use crate::{cards, state::ballot};
 
     use super::{dt::Instant, BetAction, PlayerId};
 
@@ -262,6 +262,27 @@ pub mod ticker {
         PaidPot(PlayerId, u64),
         PlayerPhotoUploaded(PlayerId),
         PlayerSentEmoji(PlayerId, emoji::TickerEmoji),
+        BallotOpened(ballot::BallotAction),
+        BallotClosed(ballot::BallotAction, BallotPassed, BallotClosedReason),
+        PlayerVoted(PlayerId, PlayerVote),
+    }
+
+    #[derive(Debug, Clone)]
+    enum BallotClosedReason {
+        TimedOut,
+        AllVoted,
+    }
+
+    #[derive(Debug, Clone)]
+    enum BallotPassed {
+        Yes,
+        No,
+    }
+
+    #[derive(Debug, Clone)]
+    enum PlayerVote {
+        Yes,
+        No,
     }
 
     impl TickerEvent {
@@ -341,6 +362,57 @@ pub mod ticker {
                         .unwrap_or_default();
                     format!("Player {}: {}", player, emoji)
                 }
+                Self::BallotOpened(action) => match action {
+                    ballot::BallotAction::KickPlayer(player_id) => {
+                        let player_name = state
+                            .players
+                            .get(player_id)
+                            .map(|p| p.name.as_str())
+                            .unwrap_or_default();
+                        format!("Ballot opened: Motion to kick {}", player_name)
+                    }
+                    ballot::BallotAction::DoubleBlinds => {
+                        "Ballot opened: Motion to double blinds".to_string()
+                    }
+                },
+                Self::BallotClosed(action, passed, reason) => {
+                    let reason = match reason {
+                        BallotClosedReason::TimedOut => "ballot timed out",
+                        BallotClosedReason::AllVoted => "all voted",
+                    };
+                    match action {
+                        ballot::BallotAction::KickPlayer(player_id) => {
+                            let player_name = state
+                                .players
+                                .get(player_id)
+                                .map(|p| p.name.as_str())
+                                .unwrap_or_default();
+                            let action = match passed {
+                                BallotPassed::Yes => "kicked",
+                                BallotPassed::No => "not kicked",
+                            };
+                            format!("Ballot ended: {} {} ({:?})", player_name, action, reason)
+                        }
+                        ballot::BallotAction::DoubleBlinds => {
+                            let action = match passed {
+                                BallotPassed::Yes => "Blinds have been doubled",
+                                BallotPassed::No => "Blinds remain the same",
+                            };
+                            format!("Ballot ended: {} ({:?})", action, reason)
+                        }
+                    }
+                }
+                Self::PlayerVoted(player_id, vote) => format_player_action(
+                    state,
+                    player_id,
+                    &format!(
+                        "voted {}",
+                        match vote {
+                            PlayerVote::Yes => "yes",
+                            PlayerVote::No => "no",
+                        }
+                    ),
+                ),
             }
         }
     }
