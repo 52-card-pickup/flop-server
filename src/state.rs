@@ -573,3 +573,118 @@ mod players {
         }
     }
 }
+
+mod bot {
+    use super::{Player, PlayerId};
+
+    pub enum Level {
+        Hard,
+    }
+
+    pub enum BotError {
+        InvalidPlayer,
+        NoValidAction,
+    }
+
+    pub struct Bot {
+        pub player_id: PlayerId,
+        pub level: Level,
+    }
+
+    impl Bot {
+        pub fn new(player_id: PlayerId, level: Level) -> Self {
+            Self { player_id, level }
+        }
+
+        pub fn play(&self, state: &super::State) -> Result<Option<super::BetAction>, BotError> {
+            if let None = state.players.get(&self.player_id) {
+                return Err(BotError::InvalidPlayer);
+            }
+            match self.level {
+                Level::Hard => self.play_hard(state),
+            }
+        }
+
+        fn play_hard(&self, state: &super::State) -> Result<Option<super::BetAction>, BotError> {
+            // set up random number generator
+            let rng = rand::thread_rng();
+
+            // same as the code above but with comments added for clarity
+            let player = state.players.get(&self.player_id).unwrap();
+            let round = &state.round;
+            let pot = round.pot;
+
+            // get the last raise amount or 0
+            let raise = round.raises.last().map(|(_, amount)| *amount).unwrap_or(0);
+            // get the last call amount or 0
+            let call = round.calls.last().map(|(_, amount)| *amount).unwrap_or(0);
+
+            // calculate the amount needed to call
+            let to_call = raise - call;
+            // calculate the amount needed to win
+            let to_win = pot + to_call;
+
+            // get the player's balance and stake
+            let balance = player.balance;
+            let stake = player.stake;
+
+            // calculate the amount to bet
+            let bet = balance.min(stake + to_call);
+            // calculate the amount to raise
+            let raise = balance.min(stake + to_call + to_win);
+
+            // setup voting variables for rng to decide bet action
+            let mut votes_to_raise = 0;
+            let mut votes_to_call = 0;
+            let mut votes_to_fold = 0;
+            let votes_to_check = 100;
+
+            // calculate the quality of the player's hand
+            let hand_strength = crate::cards::Card::hand_strength(
+                &(player.cards.0, player.cards.1),
+                &round.cards_on_table,
+            );
+
+            if let Some(hand_strength) = hand_strength {
+                // if the player has a good hand, raise
+                if hand_strength >= crate::cards::HandStrength::ThreeOfAKind {
+                    votes_to_raise += 50;
+                    votes_to_call += 20;
+                }
+
+                // if the player has a decent hand, call
+                if hand_strength >= crate::cards::HandStrength::OnePair {
+                    votes_to_call += 50;
+                }
+
+                // if the player has a bad hand, consider folding
+                if hand_strength < crate::cards::HandStrength::OnePair {
+                    votes_to_fold += 20;
+                }
+            }
+
+            // generate a random number between 0 and 100
+            let rng = rand::random::<u8>() % 100;
+
+            // if the random number is less than the votes to raise, raise if possible
+            if rng < votes_to_raise && raise > 0 {
+                return Ok(Some(super::BetAction::RaiseTo(raise)));
+            }
+
+            // if the random number is less than the votes to call, call if possible
+            let rng = rand::random::<u8>() % 100;
+            if rng < votes_to_call && bet > 0 {
+                return Ok(Some(super::BetAction::Call));
+            }
+
+            // if the random number is less than the votes to fold, fold
+            let rng = rand::random::<u8>() % 100;
+            if rng < votes_to_fold {
+                return Ok(None);
+            }
+
+            // if none of the above conditions are met, check
+            Ok(Some(super::BetAction::Check))
+        }
+    }
+}

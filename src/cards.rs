@@ -97,6 +97,20 @@ impl Display for HandStrength {
 }
 
 impl Card {
+    pub fn hand_strength(
+        player_cards: &(Self, Self),
+        table_cards: &[Self],
+    ) -> Option<HandStrength> {
+        match (player_cards, table_cards) {
+            ((card_1, card_2), []) if card_1.value == card_2.value => Some(HandStrength::OnePair),
+            (_, table_cards) if table_cards.len() < 3 => None,
+            (player_cards, table_cards) => {
+                let evaluated = Card::evaluate_hand(player_cards, table_cards);
+                Some(evaluated.0)
+            }
+            _ => None,
+        }
+    }
     pub fn evaluate_hand(player_cards: &(Self, Self), table_cards: &[Self]) -> EvaluatedHand {
         let mut all_cards = vec![player_cards.0, player_cards.1];
         all_cards.extend_from_slice(table_cards);
