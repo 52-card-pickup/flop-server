@@ -26,6 +26,10 @@ pub(crate) fn api_routes(state: state::SharedState) -> ApiRouter {
         .api_route("/room/reset", post_with(reset_room, docs::reset_room))
         .api_route("/player/:player_id", get_with(player, docs::player))
         .api_route(
+            "/player/:player_id/send",
+            post_with(player_send, docs::player_send),
+        )
+        .api_route(
             "/player/:player_id/photo",
             get_with(get_player_photo, docs::get_player_photo)
                 .post_with(post_player_photo, docs::post_player_photo),
@@ -81,6 +85,44 @@ pub(crate) async fn player(
     Ok(Json(game_player_state))
 }
 
+pub(crate) async fn player_send(
+    State(state): State<SharedState>,
+    Path(player_id): Path<String>,
+    Json(payload): Json<models::PlayerSendRequest>,
+) -> JsonResult<()> {
+    let mut state = state.write().await;
+    let player = utils::validate_player(&player_id, &state)?;
+
+    if payload.message.is_empty() {
+        info!(
+            "Player {} failed to send message: message is empty",
+            player_id
+        );
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    use state::ticker::emoji::TickerEmoji;
+    let emoji = match payload.message.as_str() {
+        "👍" | ":+1:" => TickerEmoji::thumbs_up(),
+        "👎" | ":-1:" => TickerEmoji::thumbs_down(),
+        "👏" | ":clapping:" => TickerEmoji::clapping(),
+        "⏳" | ":time:" => TickerEmoji::time(),
+        "🤔" | ":thinking:" => TickerEmoji::thinking(),
+        "😂" | ":money:" => TickerEmoji::money(),
+        "😡" | ":angry:" => TickerEmoji::angry(),
+        _ => {
+            info!("Player {} failed to send message: invalid emoji", player_id);
+            return Err(StatusCode::BAD_REQUEST);
+        }
+    };
+    state
+        .ticker
+        .emit(state::TickerEvent::PlayerSentEmoji(player.id, emoji));
+
+    state.last_update.set_now();
+    info!("Player {} sent message", player_id);
+    Ok(Json(()))
+}
+
 pub(crate) async fn get_player_photo(
     State(state): State<SharedState>,
     Path(player_id): Path<String>,
@@ -134,7 +176,6 @@ pub(crate) async fn post_player_photo(
         );
         return Err(StatusCode::BAD_REQUEST);
     }
-
     let name = field.name().unwrap().to_string();
     let data = field.bytes().await.unwrap();
     let size = data.len();
@@ -302,6 +343,10 @@ pub mod docs {
 
     pub fn player(op: TransformOperation) -> TransformOperation {
         op.description("Get the current state of a player.")
+    }
+
+    pub fn player_send(op: TransformOperation) -> TransformOperation {
+        op.description("Send a message to the game room.")
     }
 
     pub fn get_player_photo(op: TransformOperation) -> TransformOperation {
