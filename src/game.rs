@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::{
     cards, models,
     state::{self, TickerEvent},
@@ -92,6 +94,7 @@ pub(crate) fn start_game(state: &mut state::State) -> Result<(), String> {
 
     state.round.cards_on_table.clear();
     state.round.pot = 0;
+    state.round.completed = None;
     reset_players(state);
     next_turn(state, None);
     if state.status == state::GameStatus::Complete {
@@ -463,7 +466,6 @@ fn complete_round(state: &mut state::State) {
         }
         5 => {
             payout_game_winners(state);
-            reset_players(state);
             state.round.raises.clear();
             state.round.calls.clear();
             state.status = state::GameStatus::Complete;
@@ -517,12 +519,23 @@ fn payout_game_winners(state: &mut state::State) {
 
     match stakes.len() {
         1 => {
-            let winner = stakes.first().unwrap();
-            let player = state.players.get_mut(&winner.id).unwrap();
+            let winner_stake = stakes.first().unwrap();
+            let player = state.players.get_mut(&winner_stake.id).unwrap();
             player.balance += round.pot;
+            let winner = state::RoundWinner {
+                player_id: winner_stake.id.clone(),
+                hand: None,
+                winnings: round.pot,
+                total_pot_winnings: round.pot,
+            };
+            round.completed = Some(state::CompletedRound {
+                winners: vec![winner],
+                best_hand: None,
+                hide_cards: false,
+            });
             state
                 .ticker
-                .emit(TickerEvent::PaidPot(winner.id.clone(), round.pot));
+                .emit(TickerEvent::PaidPot(winner_stake.id.clone(), round.pot));
             info!(
                 "Player {} is the only player left, whole pot is won, pot: {}",
                 player.id, round.pot
@@ -531,6 +544,11 @@ fn payout_game_winners(state: &mut state::State) {
         }
         0 => {
             info!("No players left, pot is lost");
+            round.completed = Some(state::CompletedRound {
+                winners: vec![],
+                best_hand: None,
+                hide_cards: true,
+            });
             return;
         }
         _ => {}
@@ -584,23 +602,24 @@ fn payout_game_winners(state: &mut state::State) {
             score.cards()
         );
     }
+    let mut winners = vec![];
 
-    for (pot, players) in &pots {
+    for (pot, pot_players) in &pots {
         let winning_hand = scores
             .iter()
-            .filter(|(player, _)| players.contains(&player.id))
+            .filter(|(player, _)| pot_players.contains(&player.id))
             .map(|(_, score)| score.clone())
             .max()
             .unwrap();
 
         let mut winning_players: Vec<_> = scores
             .iter_mut()
-            .filter(|(player, score)| score == &winning_hand && players.contains(&player.id))
+            .filter(|(player, score)| !(score < &winning_hand) && pot_players.contains(&player.id))
             .map(|(player, _)| &mut **player)
             .collect();
 
         let winners_count = winning_players.len() as u64;
-        let payout = pot / winners_count;
+        let payout = pot / winners_count; // TODO: handle odd pot sizes
         match &winning_players[..] {
             [] => {}
             [winner] => {
@@ -616,27 +635,37 @@ fn payout_game_winners(state: &mut state::State) {
                 ));
             }
         }
+
         for winner in winning_players.iter_mut() {
+            winners.push(state::RoundWinner {
+                player_id: winner.id.clone(),
+                hand: Some(winning_hand.strength()),
+                winnings: payout,
+                total_pot_winnings: *pot,
+            });
             winner.balance += payout;
             state
                 .ticker
                 .emit(TickerEvent::PaidPot(winner.id.clone(), payout));
         }
 
-        let winners = winning_players
-            .iter()
-            .map(|p| p.id.clone().to_string())
-            .collect::<Vec<_>>();
+        let winner_ids: Vec<_> = winning_players.iter().map(|p| p.id.to_string()).collect();
 
         info!(
             "Paid out pot to winners. Pot: {}, Winner(s): {}",
             pot,
-            winners.join(", "),
+            winner_ids.join(", "),
         );
     }
 
     let pot_splits = pots.len().saturating_sub(1);
     let best_hand = scores.iter().map(|(_, score)| score.clone()).max().unwrap();
+    let best_hand_players: Vec<_> = scores
+        .iter()
+        .filter(|(_, score)| !(score < &best_hand))
+        .map(|(player, _)| player.id.clone())
+        .collect();
+
     info!(
         "Game complete, pot: {} ({} splits) (rank {:?}) cards: {:?}",
         round.pot,
@@ -645,6 +674,11 @@ fn payout_game_winners(state: &mut state::State) {
         best_hand.cards()
     );
 
+    round.completed = Some(state::CompletedRound {
+        winners,
+        best_hand: Some((best_hand_players, best_hand.strength())),
+        hide_cards: false,
+    });
     round.pot = 0;
 }
 
@@ -722,33 +756,42 @@ pub(crate) fn completed_game(state: &state::State) -> Option<models::CompletedGa
     if state.status != state::GameStatus::Complete {
         return None;
     }
-    let winner = match &state.round.cards_on_table {
-        x if x.len() == 0 => None,
-        cards_on_table => Some(
-            state
-                .players
-                .values()
-                .map(|p| (p, cards::Card::evaluate_hand(&p.cards, &cards_on_table)))
-                .map(|(p, score)| (p.name.as_str(), score))
-                .max_by_key(|(_, score)| *score)?,
-        ),
+
+    let completed_round = state.round.completed.as_ref()?;
+    let winners = {
+        let mut winners: HashMap<state::PlayerId, u64> = HashMap::new();
+        for winner in &completed_round.winners {
+            let winnings = winners.entry(winner.player_id.clone()).or_default();
+            *winnings += winner.winnings;
+        }
+        winners
     };
 
-    let player_cards = state
-        .players
-        .values()
-        .map(|p| {
-            (
-                (p.cards.0.suite.clone(), p.cards.0.value.clone()),
-                (p.cards.1.suite.clone(), p.cards.1.value.clone()),
-            )
-        })
-        .collect();
+    let winner_name = winners
+        .iter()
+        .max_by_key(|(_, winnings)| **winnings)
+        .and_then(|(id, _)| state.players.get(id))
+        .map(|p| p.name.clone());
+    let winning_hand = completed_round
+        .best_hand
+        .as_ref()
+        .map(|(_, hand)| hand.to_string());
 
     Some(models::CompletedGame {
-        winner_name: winner.map(|(name, _)| name.to_string()),
-        winning_hand: winner.map(|(_, score)| score.strength().to_string()),
-        player_cards,
+        winner_name,
+        winning_hand,
+        player_cards: state
+            .players
+            .iter()
+            .map(|(_, p)| {
+                (!p.folded && !completed_round.hide_cards).then(|| {
+                    (
+                        (p.cards.0.suite.clone(), p.cards.0.value.clone()),
+                        (p.cards.1.suite.clone(), p.cards.1.value.clone()),
+                    )
+                })
+            })
+            .collect(),
     })
 }
 
@@ -808,11 +851,15 @@ pub(crate) fn fold_player(
                 .ticker
                 .emit(TickerEvent::PaidPot(only_player_left.id.clone(), pot));
 
-            reset_players(state);
             rotate_dealer(state);
             state.status = state::GameStatus::Complete;
             state.round.raises.clear();
             state.round.calls.clear();
+            state.round.completed = Some(state::CompletedRound {
+                winners: vec![],
+                best_hand: None,
+                hide_cards: true,
+            });
             return Ok(());
         }
         _ => {}

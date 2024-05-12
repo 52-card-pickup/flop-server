@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::cards::{Card, Deck};
+use crate::cards::{self, Card, Deck};
 
 use axum::body::Bytes;
 pub use id::PlayerId;
@@ -37,6 +37,7 @@ pub struct Round {
     pub players_turn: Option<PlayerId>,
     pub raises: Vec<(PlayerId, u64)>,
     pub calls: Vec<(PlayerId, u64)>,
+    pub completed: Option<CompletedRound>,
 }
 
 #[derive(Clone)]
@@ -50,6 +51,21 @@ pub struct Player {
     pub photo: Option<(Arc<Bytes>, uuid::Uuid)>,
     pub ttl: Option<dt::Instant>,
     pub cards: (Card, Card),
+}
+
+#[derive(Debug, Clone)]
+pub struct CompletedRound {
+    pub winners: Vec<RoundWinner>,
+    pub best_hand: Option<(Vec<PlayerId>, cards::HandStrength)>,
+    pub hide_cards: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct RoundWinner {
+    pub player_id: PlayerId,
+    pub hand: Option<cards::HandStrength>,
+    pub winnings: u64,
+    pub total_pot_winnings: u64,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
