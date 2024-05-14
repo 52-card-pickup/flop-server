@@ -297,7 +297,7 @@ pub(crate) async fn join(
     Json(payload): Json<models::JoinRequest>,
 ) -> JsonResult<models::JoinResponse> {
     if payload.name.is_empty()
-        || payload.name.len() > 20
+        || payload.name.len() > 24
         || payload.name.contains(|c: char| c.is_control())
     {
         info!("Player failed to join: name is invalid");
