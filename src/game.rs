@@ -608,6 +608,7 @@ fn payout_game_winners(state: &mut state::State) {
         );
     }
     let mut winners = vec![];
+    let mut winner_hands = vec![];
 
     for (pot, pot_players) in &pots {
         let winning_hand = scores
@@ -624,9 +625,13 @@ fn payout_game_winners(state: &mut state::State) {
             .collect();
 
         let winners_count = winning_players.len() as u64;
-        let payout = pot / winners_count; // TODO: handle odd pot sizes
+        let payout = if winners_count > 0 {
+            pot / winners_count
+        } else {
+            continue;
+        }; // TODO: handle odd pot sizes
         match &winning_players[..] {
-            [] => {}
+            [] => unreachable!(),
             [winner] => {
                 state.ticker.emit(TickerEvent::Winner(
                     winner.id.clone(),
@@ -648,6 +653,8 @@ fn payout_game_winners(state: &mut state::State) {
                 winnings: payout,
                 total_pot_winnings: *pot,
             });
+            let hand = cards::Card::evaluate_hand(&winner.cards, &round.cards_on_table);
+            winner_hands.push((winner.id.clone(), hand));
             winner.balance += payout;
             state
                 .ticker
@@ -664,11 +671,10 @@ fn payout_game_winners(state: &mut state::State) {
     }
 
     let pot_splits = pots.len().saturating_sub(1);
-    let best_hand = scores.iter().map(|(_, score)| score.clone()).max().unwrap();
-    let best_hand_players: Vec<_> = scores
+    let (_, best_hand) = winner_hands.iter().max_by_key(|(_, score)| score).unwrap();
+    let best_hand_players: Vec<_> = winners
         .iter()
-        .filter(|(_, score)| !(score < &best_hand))
-        .map(|(player, _)| player.id.clone())
+        .map(|winner| winner.player_id.clone())
         .collect();
 
     info!(
@@ -772,9 +778,18 @@ pub(crate) fn completed_game(state: &state::State) -> Option<models::CompletedGa
         winners
     };
 
-    let winner_name = winners
-        .iter()
-        .max_by_key(|(_, winnings)| **winnings)
+    let max_winner = completed_round
+        .best_hand
+        .as_ref()
+        .map(|(players, _)| {
+            players
+                .iter()
+                .map(|id| (id, winners.get(id).unwrap_or(&0)))
+                .max_by_key(|(_, winnings)| **winnings)
+        })
+        .unwrap_or_else(|| winners.iter().max_by_key(|(_, winnings)| **winnings));
+
+    let winner_name = max_winner
         .and_then(|(id, _)| state.players.get(id))
         .map(|p| p.name.clone());
     let winning_hand = completed_round
