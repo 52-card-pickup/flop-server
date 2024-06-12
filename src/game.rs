@@ -99,6 +99,11 @@ pub(crate) fn start_game(state: &mut state::State) -> Result<(), String> {
     next_turn(state, None);
     if state.status == state::GameStatus::Complete {
         state.round.deck = cards::Deck::default();
+        for player in state.players.values_mut() {
+            let card_1 = state.round.deck.pop().unwrap();
+            let card_2 = state.round.deck.pop().unwrap();
+            player.cards = (card_1, card_2);
+        }
     }
 
     state.status = state::GameStatus::Playing;
@@ -994,6 +999,23 @@ mod tests {
     }
 
     #[test]
+    fn two_player_game_redeals_players_cards_after_round() {
+        let (mut state, (player_1, player_2)) =
+            fixtures::start_two_player_game(GameFixture::Complete);
+        let player_1_cards = cards_in_hand(&state, &player_1);
+        let player_2_cards = cards_in_hand(&state, &player_2);
+
+        start_game(&mut state).unwrap();
+        let new_player_1_cards = cards_in_hand(&state, &player_1);
+        let new_player_2_cards = cards_in_hand(&state, &player_2);
+
+        assert_ne!(
+            (player_1_cards, player_2_cards),
+            (new_player_1_cards, new_player_2_cards)
+        );
+    }
+
+    #[test]
     fn game_pays_outright_winner_from_pot() {
         let mut state = state::State::default();
         let state = &mut state;
@@ -1413,6 +1435,7 @@ mod tests {
             Round2,
             Round3,
             Round4,
+            Complete,
         }
 
         pub fn start_two_player_game(
@@ -1428,37 +1451,64 @@ mod tests {
             let starting_balance = state.players.iter().map(|(_, p)| p.balance).next().unwrap();
 
             assert_eq!(starting_balance, STARTING_BALANCE);
+
             start_game(&mut state).unwrap();
             deal_biased_deck(&mut state, &player_1, &player_2, true);
+            progress_two_player_game(&mut state, game_fixture);
 
+            (state, (player_1, player_2))
+        }
+
+        pub fn progress_two_player_game(state: &mut state::State, game_fixture: GameFixture) {
+            assert!(state.status == state::GameStatus::Playing);
+            assert_eq!(cards_on_table(&state).len(), 0);
             if game_fixture == GameFixture::Round1 {
-                return (state, (player_1, player_2));
+                return;
             }
+
+            let (first_player, second_player) = {
+                let active_player = state.round.players_turn.as_ref().unwrap();
+                let mut players = state
+                    .players
+                    .keys()
+                    .cycle()
+                    .skip_while(|p| *p != active_player)
+                    .cloned();
+                (players.next().unwrap(), players.next().unwrap())
+            };
 
             // assert pot balance on start is 30:
             assert_eq!(state.round.pot, 30);
-            accept_player_bet(&mut state, &player_1, P::Call).unwrap();
+            accept_player_bet(state, &first_player, P::Call).unwrap();
             assert_eq!(state.round.pot, 40);
-            accept_player_bet(&mut state, &player_2, P::Check).unwrap();
+            accept_player_bet(state, &second_player, P::Check).unwrap();
             assert_eq!(state.round.pot, 40);
             assert_eq!(cards_on_table(&state).len(), 3);
             if game_fixture == GameFixture::Round2 {
-                return (state, (player_1, player_2));
+                return;
             }
 
-            accept_player_bet(&mut state, &player_1, P::Check).unwrap();
-            accept_player_bet(&mut state, &player_2, P::Check).unwrap();
+            accept_player_bet(state, &first_player, P::Check).unwrap();
+            accept_player_bet(state, &second_player, P::Check).unwrap();
             assert_eq!(cards_on_table(&state).len(), 4);
             if game_fixture == GameFixture::Round3 {
-                return (state, (player_1, player_2));
+                return;
             }
 
-            accept_player_bet(&mut state, &player_1, P::Check).unwrap();
-            accept_player_bet(&mut state, &player_2, P::Check).unwrap();
+            accept_player_bet(state, &first_player, P::Check).unwrap();
+            accept_player_bet(state, &second_player, P::Check).unwrap();
 
             assert_eq!(cards_on_table(&state).len(), 5);
             if game_fixture == GameFixture::Round4 {
-                return (state, (player_1, player_2));
+                return;
+            }
+
+            accept_player_bet(state, &first_player, P::Check).unwrap();
+            accept_player_bet(state, &second_player, P::Check).unwrap();
+
+            assert_eq!(state.status, state::GameStatus::Complete);
+            if game_fixture == GameFixture::Complete {
+                return;
             }
 
             unreachable!();
