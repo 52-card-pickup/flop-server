@@ -741,6 +741,11 @@ pub(crate) fn cards_in_hand(
     Some(cards)
 }
 
+pub(crate) fn is_player_turn(state: &state::State, player_id: &state::PlayerId) -> bool {
+    state.status == state::GameStatus::Playing
+        && state.round.players_turn.as_ref() == Some(&player_id)
+}
+
 pub(crate) fn game_phase(state: &state::State) -> models::GamePhase {
     match state.status {
         state::GameStatus::Joining => models::GamePhase::Waiting,
