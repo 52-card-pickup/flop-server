@@ -44,7 +44,7 @@ pub struct Round {
 pub struct Player {
     pub name: String,
     pub id: PlayerId,
-    pub funds_token: String,
+    pub funds_token: token::Token,
     pub balance: u64,
     pub stake: u64,
     pub folded: bool,
@@ -114,7 +114,7 @@ mod id {
 pub mod token {
     use std::fmt::Display;
 
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct Token {
         pub value: String,
     }

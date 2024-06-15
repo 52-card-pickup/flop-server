@@ -122,14 +122,14 @@ pub(crate) fn add_new_player(
     if state.players.len() >= state::MAX_PLAYERS {
         return Err("Room is full".to_string());
     }
-    let funds_token = uuid::Uuid::new_v4().hyphenated().to_string();
+    let funds_token = state::token::Token::default();
     let player_id = state::PlayerId::default();
     let card_1 = state.round.deck.pop().unwrap();
     let card_2 = state.round.deck.pop().unwrap();
     let player = state::Player {
         name: player_name.to_owned(),
         id: player_id.clone(),
-        funds_token: funds_token.split_once('-').unwrap().0.to_string(),
+        funds_token,
         balance: state::STARTING_BALANCE,
         stake: 0,
         folded: false,
@@ -923,7 +923,7 @@ pub(crate) fn transfer_funds(
             .players
             .iter()
             .find_map(|(id, p)| {
-                if p.funds_token == payload.to {
+                if p.funds_token.as_ref() == &payload.to {
                     Some(id.clone())
                 } else {
                     None
@@ -1182,8 +1182,10 @@ mod tests {
         let player_1_balance = state.players.get(&player_1).unwrap().balance;
         let player_2_balance = state.players.get(&player_2).unwrap().balance;
 
+        let player_2_token = &state.players.get(&player_2).unwrap().funds_token;
+
         let transfer_request = models::TransferRequest {
-            to: state.players.get(&player_2).unwrap().funds_token.clone(),
+            to: player_2_token.to_string(),
             amount: 100,
         };
 

@@ -144,7 +144,7 @@ pub(crate) async fn get_player_transfer(
         .filter(|p| p.id != player.id)
         .map(|p| models::PlayerAccount {
             name: p.name.clone(),
-            account_id: p.funds_token.clone(),
+            account_id: p.funds_token.to_string(),
         })
         .collect();
 
