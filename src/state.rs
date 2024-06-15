@@ -18,7 +18,7 @@ pub const TICKER_ITEM_TIMEOUT_SECONDS: u64 = 10;
 pub const TICKER_ITEM_GAP_MILLISECONDS: u64 = 500;
 pub const PLAYER_TURN_TIMEOUT_SECONDS: u64 = 60;
 pub const GAME_IDLE_TIMEOUT_SECONDS: u64 = 300;
-pub const MAX_PLAYERS: usize = 8;
+pub const MAX_PLAYERS: usize = 10;
 
 #[derive(Default)]
 pub struct State {
@@ -47,7 +47,7 @@ pub struct Player {
     pub balance: u64,
     pub stake: u64,
     pub folded: bool,
-    pub photo: Option<(Arc<Bytes>, uuid::Uuid)>,
+    pub photo: Option<(Arc<Bytes>, token::Token)>,
     pub ttl: Option<dt::Instant>,
     pub cards: (Card, Card),
 }
@@ -91,6 +91,41 @@ mod id {
     impl Default for PlayerId {
         fn default() -> Self {
             PlayerId(uuid::Uuid::new_v4().to_string())
+        }
+    }
+}
+
+pub mod token {
+    use std::fmt::Display;
+
+    #[derive(Debug, Clone)]
+    pub struct Token {
+        pub value: String,
+    }
+
+    impl AsRef<str> for Token {
+        #[inline]
+        fn as_ref(&self) -> &str {
+            <String as AsRef<str>>::as_ref(&self.value)
+        }
+    }
+
+    impl Default for Token {
+        fn default() -> Self {
+            let guid = &uuid::Uuid::new_v4();
+            let guid = guid.as_hyphenated().to_string();
+            let (hash, _) = guid.split_once('-').expect("uuid should have hyphen");
+
+            Self {
+                value: hash.to_string(),
+            }
+        }
+    }
+
+    impl Display for Token {
+        #[inline]
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            <String as Display>::fmt(&self.value, f)
         }
     }
 }
@@ -151,10 +186,7 @@ pub mod dt {
         use super::Instant;
 
         #[derive(Clone, Default)]
-        pub struct SignalInstant(
-            Instant,
-            Arc<Mutex<Vec<tokio::sync::oneshot::Sender<Instant>>>>,
-        );
+        pub struct SignalInstant(Instant, Arc<Mutex<Vec<oneshot::Sender<Instant>>>>);
 
         impl SignalInstant {
             pub fn as_u64(&self) -> u64 {

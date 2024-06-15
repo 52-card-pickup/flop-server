@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use crate::{
     game, models,
@@ -36,8 +36,11 @@ pub(crate) fn api_routes(state: state::SharedState) -> ApiRouter {
         )
         .api_route(
             "/player/:player_id/photo",
-            get_with(get_player_photo, docs::get_player_photo)
-                .post_with(post_player_photo, docs::post_player_photo),
+            post_with(post_player_photo, docs::post_player_photo),
+        )
+        .api_route(
+            "/player/photo/:token",
+            get_with(get_player_photo, docs::get_player_photo),
         )
         .api_route("/join", post_with(join, docs::join))
         .api_route("/play", post_with(play, docs::play))
@@ -174,31 +177,32 @@ pub(crate) async fn post_player_transfer(
 
 pub(crate) async fn get_player_photo(
     State(state): State<SharedState>,
-    Path(player_id): Path<String>,
-    Query(hash): Query<HashMap<String, String>>,
+    Path(token): Path<String>,
 ) -> Result<(header::HeaderMap, body::Bytes), StatusCode> {
     let state = state.read().await;
-    let player = utils::validate_player(&player_id, &state)?;
+    let photo = state
+        .players
+        .values()
+        .find(|p| p.photo.as_ref().map(|(_, token)| token.as_ref()) == Some(token.as_str()))
+        .and_then(|p| p.photo.as_ref())
+        .ok_or(StatusCode::NOT_FOUND)?;
 
-    let photo = player.photo.as_ref().ok_or(StatusCode::NOT_FOUND)?;
     let mut headers = header::HeaderMap::new();
     headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("image/jpeg"));
     headers.insert(
         header::CONTENT_DISPOSITION,
         HeaderValue::from_str("inline").unwrap(),
     );
-    if hash.contains_key("hash") {
-        headers.insert(
-            header::ETAG,
-            HeaderValue::from_str(&photo.1.to_string()).unwrap(),
-        );
-        headers.insert(
-            header::CACHE_CONTROL,
-            HeaderValue::from_static("public, max-age=31536000"),
-        );
-    }
+    headers.insert(
+        header::ETAG,
+        HeaderValue::from_str(&photo.1.to_string()).unwrap(),
+    );
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=31536000"),
+    );
 
-    let bytes = (*photo.0).clone();
+    let bytes: body::Bytes = photo.0.as_ref().clone();
     Ok((headers, bytes.into()))
 }
 
@@ -234,7 +238,8 @@ pub(crate) async fn post_player_photo(
         .players
         .get_mut(&player_id)
         .ok_or(StatusCode::NOT_FOUND)?;
-    let guid = uuid::Uuid::new_v4();
+
+    let guid = state::token::Token::default();
     player.photo = Some((Arc::new(data), guid));
     state
         .ticker
@@ -292,7 +297,7 @@ pub(crate) async fn join(
     Json(payload): Json<models::JoinRequest>,
 ) -> JsonResult<models::JoinResponse> {
     if payload.name.is_empty()
-        || payload.name.len() > 20
+        || payload.name.len() > 24
         || payload.name.contains(|c: char| c.is_control())
     {
         info!("Player failed to join: name is invalid");
@@ -406,12 +411,12 @@ pub mod docs {
         op.description("Transfer funds to another player.")
     }
 
-    pub fn get_player_photo(op: TransformOperation) -> TransformOperation {
-        op.description("Get a photo for a player.")
-    }
-
     pub fn post_player_photo(op: TransformOperation) -> TransformOperation {
         op.description("Upload a photo for a player.")
+    }
+
+    pub fn get_player_photo(op: TransformOperation) -> TransformOperation {
+        op.description("Get a photo for a player.")
     }
 
     pub fn play(op: TransformOperation) -> TransformOperation {
