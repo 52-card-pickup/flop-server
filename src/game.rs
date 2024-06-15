@@ -831,11 +831,8 @@ pub(crate) fn room_players(state: &state::State) -> Vec<models::GameClientPlayer
 }
 
 fn player_photo_url(p: &state::Player) -> Option<String> {
-    let (_, guid) = p.photo.as_ref()?;
-    let guid = guid.as_hyphenated().to_string();
-    let (hash, _) = guid.split_once('-').expect("uuid should have hyphen");
-
-    Some(format!("player/{}/photo?hash={}", p.id, hash))
+    let (_, token) = p.photo.as_ref()?;
+    Some(format!("player/photo/{}", token))
 }
 
 pub(crate) fn fold_player(
