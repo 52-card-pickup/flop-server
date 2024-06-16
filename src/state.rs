@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::cards::{Card, Deck};
+use crate::cards::{self, Card, Deck};
 
 use axum::body::Bytes;
 pub use id::PlayerId;
@@ -37,19 +37,35 @@ pub struct Round {
     pub players_turn: Option<PlayerId>,
     pub raises: Vec<(PlayerId, u64)>,
     pub calls: Vec<(PlayerId, u64)>,
+    pub completed: Option<CompletedRound>,
 }
 
 #[derive(Clone)]
 pub struct Player {
     pub name: String,
     pub id: PlayerId,
-    pub funds_token: String,
+    pub funds_token: token::Token,
     pub balance: u64,
     pub stake: u64,
     pub folded: bool,
     pub photo: Option<(Arc<Bytes>, token::Token)>,
     pub ttl: Option<dt::Instant>,
     pub cards: (Card, Card),
+}
+
+#[derive(Debug, Clone)]
+pub struct CompletedRound {
+    pub winners: Vec<RoundWinner>,
+    pub best_hand: Option<(Vec<PlayerId>, cards::HandStrength)>,
+    pub hide_cards: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct RoundWinner {
+    pub player_id: PlayerId,
+    pub hand: Option<cards::HandStrength>,
+    pub winnings: u64,
+    pub total_pot_winnings: u64,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -98,7 +114,7 @@ mod id {
 pub mod token {
     use std::fmt::Display;
 
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct Token {
         pub value: String,
     }

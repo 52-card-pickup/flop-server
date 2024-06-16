@@ -81,8 +81,8 @@ pub(crate) async fn player(
     let game_player_state = models::GamePlayerState {
         state: game::game_phase(&state),
         balance: player.balance,
-        cards: game::cards_in_hand(&state, &player.id),
-        your_turn: state.round.players_turn.as_ref() == Some(&player.id),
+        cards: game::cards_in_hand(&state, &player.id).unwrap(),
+        your_turn: game::is_player_turn(&state, &player.id),
         call_amount: game::call_amount(&state).unwrap_or(0),
         min_raise_to: game::min_raise_to(&state),
         turn_expires_dt: game::turn_expires_dt(&state, &player.id),
@@ -144,7 +144,7 @@ pub(crate) async fn get_player_transfer(
         .filter(|p| p.id != player.id)
         .map(|p| models::PlayerAccount {
             name: p.name.clone(),
-            account_id: p.funds_token.clone(),
+            account_id: p.funds_token.to_string(),
         })
         .collect();
 
