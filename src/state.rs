@@ -12,21 +12,36 @@ use self::players::Players;
 pub type SharedState = Arc<RwLock<State>>;
 
 pub const STARTING_BALANCE: u64 = 1000;
-pub const SMALL_BLIND: u64 = 10;
-pub const BIG_BLIND: u64 = 20;
+pub const STARTING_SMALL_BLIND: u64 = 10;
 pub const TICKER_ITEM_TIMEOUT_SECONDS: u64 = 10;
 pub const TICKER_ITEM_GAP_MILLISECONDS: u64 = 500;
 pub const PLAYER_TURN_TIMEOUT_SECONDS: u64 = 60;
 pub const GAME_IDLE_TIMEOUT_SECONDS: u64 = 300;
 pub const MAX_PLAYERS: usize = 10;
 
-#[derive(Default)]
 pub struct State {
     pub players: Players,
     pub round: Round,
     pub last_update: dt::SignalInstant,
     pub ticker: ticker::Ticker,
     pub status: GameStatus,
+    pub ballot: Option<ballot::Ballot>,
+    pub small_blind: u64,
+    pub action_queue: Vec<ballot::BallotAction>,
+}
+impl Default for State {
+    fn default() -> Self {
+        State {
+            players: Default::default(),
+            round: Default::default(),
+            last_update: Default::default(),
+            status: Default::default(),
+            ballot: None,
+            small_blind: STARTING_SMALL_BLIND,
+            action_queue: Default::default(),
+            ticker: Default::default(),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -163,6 +178,10 @@ pub mod dt {
             self.0 += seconds * 1000;
         }
 
+        pub fn sub_seconds(&mut self, seconds: u64) {
+            self.0 -= seconds * 1000;
+        }
+
         pub fn as_u64(&self) -> u64 {
             self.0.into()
         }
@@ -271,7 +290,7 @@ pub mod dt {
 pub mod ticker {
     use std::borrow::Cow;
 
-    use crate::cards;
+    use crate::{cards, state::ballot};
 
     use super::{dt::Instant, BetAction, PlayerId};
 
@@ -293,6 +312,27 @@ pub mod ticker {
         PlayerPhotoUploaded(PlayerId),
         PlayerSentEmoji(PlayerId, emoji::TickerEmoji),
         PlayerTransferredBalance(PlayerId, PlayerId, u64),
+        BallotOpened(ballot::BallotAction),
+        BallotClosed(ballot::BallotAction, BallotPassed, BallotClosedReason),
+        PlayerVoted(PlayerId, PlayerVote),
+    }
+
+    #[derive(Debug, Clone)]
+    enum BallotClosedReason {
+        TimedOut,
+        AllVoted,
+    }
+
+    #[derive(Debug, Clone)]
+    enum BallotPassed {
+        Yes,
+        No,
+    }
+
+    #[derive(Debug, Clone)]
+    enum PlayerVote {
+        Yes,
+        No,
     }
 
     impl TickerEvent {
@@ -385,6 +425,57 @@ pub mod ticker {
                         .unwrap_or_default();
                     format!("Player {} transferred £{} to {}", from, amount, to)
                 }
+                Self::BallotOpened(action) => match action {
+                    ballot::BallotAction::KickPlayer(player_id) => {
+                        let player_name = state
+                            .players
+                            .get(player_id)
+                            .map(|p| p.name.as_str())
+                            .unwrap_or_default();
+                        format!("Ballot opened: Motion to kick {}", player_name)
+                    }
+                    ballot::BallotAction::DoubleBlinds => {
+                        "Ballot opened: Motion to double blinds".to_string()
+                    }
+                },
+                Self::BallotClosed(action, passed, reason) => {
+                    let reason = match reason {
+                        BallotClosedReason::TimedOut => "ballot timed out",
+                        BallotClosedReason::AllVoted => "all voted",
+                    };
+                    match action {
+                        ballot::BallotAction::KickPlayer(player_id) => {
+                            let player_name = state
+                                .players
+                                .get(player_id)
+                                .map(|p| p.name.as_str())
+                                .unwrap_or_default();
+                            let action = match passed {
+                                BallotPassed::Yes => "kicked",
+                                BallotPassed::No => "not kicked",
+                            };
+                            format!("Ballot ended: {} {} ({:?})", player_name, action, reason)
+                        }
+                        ballot::BallotAction::DoubleBlinds => {
+                            let action = match passed {
+                                BallotPassed::Yes => "Blinds have been doubled",
+                                BallotPassed::No => "Blinds remain the same",
+                            };
+                            format!("Ballot ended: {} ({:?})", action, reason)
+                        }
+                    }
+                }
+                Self::PlayerVoted(player_id, vote) => format_player_action(
+                    state,
+                    player_id,
+                    &format!(
+                        "voted {}",
+                        match vote {
+                            PlayerVote::Yes => "yes",
+                            PlayerVote::No => "no",
+                        }
+                    ),
+                ),
             }
         }
     }
@@ -633,6 +724,30 @@ mod players {
 
         pub fn len(&self) -> usize {
             self.0.len()
+        }
+    }
+}
+
+pub mod ballot {
+    use super::dt;
+    use super::PlayerId;
+
+    #[derive(Default, Clone)]
+    pub struct Ballot {
+        pub end_time: dt::Instant,
+        pub votes: Vec<(PlayerId, bool)>,
+        pub action: BallotAction,
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    pub enum BallotAction {
+        KickPlayer(PlayerId),
+        DoubleBlinds,
+    }
+
+    impl Default for BallotAction {
+        fn default() -> Self {
+            BallotAction::DoubleBlinds
         }
     }
 }
