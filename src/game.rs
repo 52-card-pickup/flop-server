@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::{
     cards, models,
     state::{self, TickerEvent},
@@ -54,7 +56,12 @@ pub(crate) fn spawn_game_worker(state: state::SharedState) {
                 info!("Player {} turn expired", player.id);
                 let mut state = state.write().await;
 
-                fold_player(&mut state, &player.id).unwrap();
+                _ = fold_player(&mut state, &player.id).map_err(|e| {
+                    info!(
+                        "Player {} turn expired, but could not fold: {}",
+                        player.id, e
+                    )
+                });
 
                 // TODO: notify player, soft kick
                 if let Some(player) = state.players.remove(&player.id) {
@@ -108,10 +115,16 @@ pub(crate) fn start_game(state: &mut state::State) -> Result<(), String> {
 
     state.round.cards_on_table.clear();
     state.round.pot = 0;
+    state.round.completed = None;
     reset_players(state);
     next_turn(state, None);
     if state.status == state::GameStatus::Complete {
         state.round.deck = cards::Deck::default();
+        for player in state.players.values_mut() {
+            let card_1 = state.round.deck.pop();
+            let card_2 = state.round.deck.pop();
+            player.cards = (card_1, card_2);
+        }
     }
 
     state.status = state::GameStatus::Playing;
@@ -130,12 +143,14 @@ pub(crate) fn add_new_player(
     if state.players.len() >= state::MAX_PLAYERS {
         return Err("Room is full".to_string());
     }
+    let funds_token = state::token::Token::default();
     let player_id = state::PlayerId::default();
-    let card_1 = state.round.deck.pop().unwrap();
-    let card_2 = state.round.deck.pop().unwrap();
+    let card_1 = state.round.deck.pop();
+    let card_2 = state.round.deck.pop();
     let player = state::Player {
         name: player_name.to_owned(),
         id: player_id.clone(),
+        funds_token,
         balance: state::STARTING_BALANCE,
         stake: 0,
         folded: false,
@@ -317,8 +332,8 @@ fn next_turn(state: &mut state::State, current_player_id: Option<&state::PlayerI
                 .filter(|(_, p)| !p.folded && p.balance > 0)
                 .map(|(id, _)| id.clone())
                 .cycle();
-            let small_blind_player = player_ids.next().unwrap();
-            let big_blind_player = player_ids.next().unwrap();
+            let small_blind_player = player_ids.next().expect("No players left");
+            let big_blind_player = player_ids.next().expect("No players left");
             let next_player_id = player_ids.next();
 
             info!(
@@ -389,7 +404,8 @@ fn get_next_players_turn(
 
     // if first round, check if player with big blind has checked on the big blind stake.
     if first_round {
-        let is_big_blind_first_round = current_player_id == state.players.keys().nth(1).unwrap();
+        let is_big_blind_first_round =
+            current_player_id == state.players.keys().nth(1).expect("No players left");
         let current_player_stake_is_call_amount =
             player_stake_in_round(state, current_player_id) == state.small_blind * 2;
         if is_big_blind_first_round && current_player_stake_is_call_amount {
@@ -492,7 +508,7 @@ fn complete_round(state: &mut state::State) {
 
 fn place_cards_on_table(state: &mut state::State, count: usize) {
     for _ in 0..count {
-        let next_card = state.round.deck.pop().unwrap();
+        let next_card = state.round.deck.pop();
         state.round.cards_on_table.push(next_card);
     }
     state.ticker.emit(TickerEvent::CardsDealtToTable(count));
@@ -502,7 +518,8 @@ fn rotate_dealer(state: &mut state::State) {
     if let Some(old_dealer) = state.players.pop_first() {
         state.players.insert(old_dealer.0, old_dealer.1);
 
-        let dealer = state.players.keys().next().cloned().unwrap();
+        let mut player_ids = state.players.keys();
+        let dealer = player_ids.next().cloned().expect("No players left");
         state.ticker.emit(TickerEvent::DealerRotated(dealer));
     }
 }
@@ -532,20 +549,48 @@ fn payout_game_winners(state: &mut state::State) {
 
     match stakes.len() {
         1 => {
-            let winner = stakes.first().unwrap();
-            let player = state.players.get_mut(&winner.id).unwrap();
-            player.balance += round.pot;
-            state
-                .ticker
-                .emit(TickerEvent::PaidPot(winner.id.clone(), round.pot));
-            info!(
-                "Player {} is the only player left, whole pot is won, pot: {}",
-                player.id, round.pot
-            );
+            let winner_stake = stakes.first().unwrap();
+            match state.players.get_mut(&winner_stake.id) {
+                Some(player) => {
+                    player.balance += round.pot;
+                    let winner = state::RoundWinner {
+                        player_id: winner_stake.id.clone(),
+                        hand: None,
+                        winnings: round.pot,
+                        total_pot_winnings: round.pot,
+                    };
+                    round.completed = Some(state::CompletedRound {
+                        winners: vec![winner],
+                        best_hand: None,
+                        hide_cards: false,
+                    });
+                    state
+                        .ticker
+                        .emit(TickerEvent::PaidPot(winner_stake.id.clone(), round.pot));
+                    info!(
+                        "Player {} is the only player left, whole pot is won, pot: {}",
+                        player.id, round.pot
+                    );
+                }
+                _ => {
+                    info!("No players left, pot is lost");
+                    round.completed = Some(state::CompletedRound {
+                        winners: vec![],
+                        best_hand: None,
+                        hide_cards: true,
+                    });
+                    return;
+                }
+            }
             return;
         }
         0 => {
             info!("No players left, pot is lost");
+            round.completed = Some(state::CompletedRound {
+                winners: vec![],
+                best_hand: None,
+                hide_cards: true,
+            });
             return;
         }
         _ => {}
@@ -599,25 +644,31 @@ fn payout_game_winners(state: &mut state::State) {
             score.cards()
         );
     }
+    let mut winners = vec![];
+    let mut winner_hands = vec![];
 
-    for (pot, players) in &pots {
+    for (pot, pot_players) in &pots {
         let winning_hand = scores
             .iter()
-            .filter(|(player, _)| players.contains(&player.id))
+            .filter(|(player, _)| pot_players.contains(&player.id))
             .map(|(_, score)| score.clone())
             .max()
-            .unwrap();
+            .expect("No winning hand found for pot");
 
         let mut winning_players: Vec<_> = scores
             .iter_mut()
-            .filter(|(player, score)| score == &winning_hand && players.contains(&player.id))
+            .filter(|(player, score)| !(score < &winning_hand) && pot_players.contains(&player.id))
             .map(|(player, _)| &mut **player)
             .collect();
 
         let winners_count = winning_players.len() as u64;
-        let payout = pot / winners_count;
+        let payout = if winners_count > 0 {
+            pot / winners_count
+        } else {
+            continue;
+        }; // TODO: handle odd pot sizes
         match &winning_players[..] {
-            [] => {}
+            [] => unreachable!(),
             [winner] => {
                 state.ticker.emit(TickerEvent::Winner(
                     winner.id.clone(),
@@ -631,27 +682,41 @@ fn payout_game_winners(state: &mut state::State) {
                 ));
             }
         }
+
         for winner in winning_players.iter_mut() {
+            winners.push(state::RoundWinner {
+                player_id: winner.id.clone(),
+                hand: Some(winning_hand.strength()),
+                winnings: payout,
+                total_pot_winnings: *pot,
+            });
+            let hand = cards::Card::evaluate_hand(&winner.cards, &round.cards_on_table);
+            winner_hands.push((winner.id.clone(), hand));
             winner.balance += payout;
             state
                 .ticker
                 .emit(TickerEvent::PaidPot(winner.id.clone(), payout));
         }
 
-        let winners = winning_players
-            .iter()
-            .map(|p| p.id.clone().to_string())
-            .collect::<Vec<_>>();
+        let winner_ids: Vec<_> = winning_players.iter().map(|p| p.id.to_string()).collect();
 
         info!(
             "Paid out pot to winners. Pot: {}, Winner(s): {}",
             pot,
-            winners.join(", "),
+            winner_ids.join(", "),
         );
     }
 
     let pot_splits = pots.len().saturating_sub(1);
-    let best_hand = scores.iter().map(|(_, score)| score.clone()).max().unwrap();
+    let (_, best_hand) = winner_hands
+        .iter()
+        .max_by_key(|(_, score)| score)
+        .expect("No winning hands found, but there should be at least one winner");
+    let best_hand_players: Vec<_> = winners
+        .iter()
+        .map(|winner| winner.player_id.clone())
+        .collect();
+
     info!(
         "Game complete, pot: {} ({} splits) (rank {:?}) cards: {:?}",
         round.pot,
@@ -660,6 +725,11 @@ fn payout_game_winners(state: &mut state::State) {
         best_hand.cards()
     );
 
+    round.completed = Some(state::CompletedRound {
+        winners,
+        best_hand: Some((best_hand_players, best_hand.strength())),
+        hide_cards: false,
+    });
     round.pot = 0;
 }
 
@@ -676,17 +746,22 @@ pub(crate) fn cards_on_table(state: &state::State) -> Vec<(cards::CardSuite, car
 pub(crate) fn cards_in_hand(
     state: &state::State,
     player_id: &state::PlayerId,
-) -> (
+) -> Option<(
     (cards::CardSuite, cards::CardValue),
     (cards::CardSuite, cards::CardValue),
-) {
-    let player = state.players.get(player_id).unwrap();
+)> {
+    let player = state.players.get(player_id)?;
     let cards = player.cards.clone();
     let cards = (
         (cards.0.suite.clone(), cards.0.value.clone()),
         (cards.1.suite.clone(), cards.1.value.clone()),
     );
-    cards
+    Some(cards)
+}
+
+pub(crate) fn is_player_turn(state: &state::State, player_id: &state::PlayerId) -> bool {
+    state.status == state::GameStatus::Playing
+        && state.round.players_turn.as_ref() == Some(&player_id)
 }
 
 pub(crate) fn game_phase(state: &state::State) -> models::GamePhase {
@@ -737,33 +812,51 @@ pub(crate) fn completed_game(state: &state::State) -> Option<models::CompletedGa
     if state.status != state::GameStatus::Complete {
         return None;
     }
-    let winner = match &state.round.cards_on_table {
-        x if x.len() == 0 => None,
-        cards_on_table => Some(
-            state
-                .players
-                .values()
-                .map(|p| (p, cards::Card::evaluate_hand(&p.cards, &cards_on_table)))
-                .map(|(p, score)| (p.name.as_str(), score))
-                .max_by_key(|(_, score)| *score)?,
-        ),
+
+    let completed_round = state.round.completed.as_ref()?;
+    let winners = {
+        let mut winners: HashMap<state::PlayerId, u64> = HashMap::new();
+        for winner in &completed_round.winners {
+            let winnings = winners.entry(winner.player_id.clone()).or_default();
+            *winnings += winner.winnings;
+        }
+        winners
     };
 
-    let player_cards = state
-        .players
-        .values()
-        .map(|p| {
-            (
-                (p.cards.0.suite.clone(), p.cards.0.value.clone()),
-                (p.cards.1.suite.clone(), p.cards.1.value.clone()),
-            )
+    let max_winner = completed_round
+        .best_hand
+        .as_ref()
+        .map(|(players, _)| {
+            players
+                .iter()
+                .map(|id| (id, winners.get(id).unwrap_or(&0)))
+                .max_by_key(|(_, winnings)| **winnings)
         })
-        .collect();
+        .unwrap_or_else(|| winners.iter().max_by_key(|(_, winnings)| **winnings));
+
+    let winner_name = max_winner
+        .and_then(|(id, _)| state.players.get(id))
+        .map(|p| p.name.clone());
+    let winning_hand = completed_round
+        .best_hand
+        .as_ref()
+        .map(|(_, hand)| hand.to_string());
 
     Some(models::CompletedGame {
-        winner_name: winner.map(|(name, _)| name.to_string()),
-        winning_hand: winner.map(|(_, score)| score.strength().to_string()),
-        player_cards,
+        winner_name,
+        winning_hand,
+        player_cards: state
+            .players
+            .iter()
+            .map(|(_, p)| {
+                (!p.folded && !completed_round.hide_cards).then(|| {
+                    (
+                        (p.cards.0.suite.clone(), p.cards.0.value.clone()),
+                        (p.cards.1.suite.clone(), p.cards.1.value.clone()),
+                    )
+                })
+            })
+            .collect(),
     })
 }
 
@@ -783,11 +876,8 @@ pub(crate) fn room_players(state: &state::State) -> Vec<models::GameClientPlayer
 }
 
 fn player_photo_url(p: &state::Player) -> Option<String> {
-    let (_, guid) = p.photo.as_ref()?;
-    let guid = guid.as_hyphenated().to_string();
-    let (hash, _) = guid.split_once('-').expect("uuid should have hyphen");
-
-    Some(format!("player/{}/photo?hash={}", p.id, hash))
+    let (_, token) = p.photo.as_ref()?;
+    Some(format!("player/photo/{}", token))
 }
 
 pub(crate) fn fold_player(
@@ -823,12 +913,16 @@ pub(crate) fn fold_player(
                 .ticker
                 .emit(TickerEvent::PaidPot(only_player_left.id.clone(), pot));
 
-            reset_players(state);
             rotate_dealer(state);
             consume_action_queue(state);
             state.status = state::GameStatus::Complete;
             state.round.raises.clear();
             state.round.calls.clear();
+            state.round.completed = Some(state::CompletedRound {
+                winners: vec![],
+                best_hand: None,
+                hide_cards: true,
+            });
             return Ok(());
         }
         _ => {}
@@ -855,6 +949,66 @@ pub(crate) fn reset_ttl(state: &mut state::State, id: &state::PlayerId) -> Resul
         },
         None => Err("Player not found".to_string()),
     }
+}
+
+pub(crate) fn transfer_funds(
+    state: &mut state::State,
+    player_id: &state::PlayerId,
+    payload: &models::TransferRequest,
+) -> Result<(), ()> {
+    let player_balance = state.players.get(&player_id).ok_or(())?.balance;
+    let remaining = player_balance.checked_sub(payload.amount).ok_or_else(|| {
+        info!(
+            "Player {} failed to transfer: insufficient funds",
+            player_id
+        );
+        ()
+    })?;
+    let destination_id = {
+        let destination_id = state
+            .players
+            .iter()
+            .find_map(|(id, p)| {
+                if p.funds_token.as_ref() == &payload.to {
+                    Some(id.clone())
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| {
+                info!(
+                    "Player {} failed to transfer: destination not found",
+                    player_id
+                );
+                ()
+            })?;
+
+        let destination = state.players.get_mut(&destination_id).ok_or_else(|| {
+            info!(
+                "Player {} failed to transfer: destination not found (destination_id: {})",
+                player_id, destination_id
+            );
+            ()
+        })?;
+        destination.balance += payload.amount;
+        destination.id.clone()
+    };
+    {
+        let player = state
+            .players
+            .get_mut(&player_id)
+            .expect("Player must exist");
+        player.balance = remaining;
+    }
+    state
+        .ticker
+        .emit(state::TickerEvent::PlayerTransferredBalance(
+            player_id.clone(),
+            destination_id,
+            payload.amount,
+        ));
+
+    Ok(())
 }
 
 pub(crate) fn call_amount(state: &state::State) -> Option<u64> {
@@ -1101,6 +1255,23 @@ mod tests {
     }
 
     #[test]
+    fn two_player_game_redeals_players_cards_after_round() {
+        let (mut state, (player_1, player_2)) =
+            fixtures::start_two_player_game(GameFixture::Complete);
+        let player_1_cards = cards_in_hand(&state, &player_1).unwrap();
+        let player_2_cards = cards_in_hand(&state, &player_2).unwrap();
+
+        start_game(&mut state).unwrap();
+        let new_player_1_cards = cards_in_hand(&state, &player_1).unwrap();
+        let new_player_2_cards = cards_in_hand(&state, &player_2).unwrap();
+
+        assert_ne!(
+            (player_1_cards, player_2_cards),
+            (new_player_1_cards, new_player_2_cards)
+        );
+    }
+
+    #[test]
     fn game_pays_outright_winner_from_pot() {
         let mut state = state::State::default();
         let state = &mut state;
@@ -1246,6 +1417,29 @@ mod tests {
 
         let winner = state.players.get(&player_2).unwrap();
         assert_eq!(winner.balance, STARTING_BALANCE + state.small_blind);
+    }
+
+    #[test]
+    fn two_player_game_can_transfer_funds() {
+        let (mut state, (player_1, player_2)) =
+            fixtures::start_two_player_game(GameFixture::Round1);
+        let player_1_balance = state.players.get(&player_1).unwrap().balance;
+        let player_2_balance = state.players.get(&player_2).unwrap().balance;
+
+        let player_2_token = &state.players.get(&player_2).unwrap().funds_token;
+
+        let transfer_request = models::TransferRequest {
+            to: player_2_token.to_string(),
+            amount: 100,
+        };
+
+        transfer_funds(&mut state, &player_1, &transfer_request).unwrap();
+
+        let player_1_balance_after_transfer = state.players.get(&player_1).unwrap().balance;
+        let player_2_balance_after_transfer = state.players.get(&player_2).unwrap().balance;
+
+        assert_eq!(player_1_balance - 100, player_1_balance_after_transfer);
+        assert_eq!(player_2_balance + 100, player_2_balance_after_transfer);
     }
 
     #[test]
@@ -1687,6 +1881,7 @@ mod tests {
             Round2,
             Round3,
             Round4,
+            Complete,
         }
 
         pub fn start_two_player_game(
@@ -1702,37 +1897,64 @@ mod tests {
             let starting_balance = state.players.iter().map(|(_, p)| p.balance).next().unwrap();
 
             assert_eq!(starting_balance, STARTING_BALANCE);
+
             start_game(&mut state).unwrap();
             deal_biased_deck(&mut state, &player_1, &player_2, true);
+            progress_two_player_game(&mut state, game_fixture);
 
+            (state, (player_1, player_2))
+        }
+
+        pub fn progress_two_player_game(state: &mut state::State, game_fixture: GameFixture) {
+            assert!(state.status == state::GameStatus::Playing);
+            assert_eq!(cards_on_table(&state).len(), 0);
             if game_fixture == GameFixture::Round1 {
-                return (state, (player_1, player_2));
+                return;
             }
+
+            let (first_player, second_player) = {
+                let active_player = state.round.players_turn.as_ref().unwrap();
+                let mut players = state
+                    .players
+                    .keys()
+                    .cycle()
+                    .skip_while(|p| *p != active_player)
+                    .cloned();
+                (players.next().unwrap(), players.next().unwrap())
+            };
 
             // assert pot balance on start is 30:
             assert_eq!(state.round.pot, 30);
-            accept_player_bet(&mut state, &player_1, P::Call).unwrap();
+            accept_player_bet(state, &first_player, P::Call).unwrap();
             assert_eq!(state.round.pot, 40);
-            accept_player_bet(&mut state, &player_2, P::Check).unwrap();
+            accept_player_bet(state, &second_player, P::Check).unwrap();
             assert_eq!(state.round.pot, 40);
             assert_eq!(cards_on_table(&state).len(), 3);
             if game_fixture == GameFixture::Round2 {
-                return (state, (player_1, player_2));
+                return;
             }
 
-            accept_player_bet(&mut state, &player_1, P::Check).unwrap();
-            accept_player_bet(&mut state, &player_2, P::Check).unwrap();
+            accept_player_bet(state, &first_player, P::Check).unwrap();
+            accept_player_bet(state, &second_player, P::Check).unwrap();
             assert_eq!(cards_on_table(&state).len(), 4);
             if game_fixture == GameFixture::Round3 {
-                return (state, (player_1, player_2));
+                return;
             }
 
-            accept_player_bet(&mut state, &player_1, P::Check).unwrap();
-            accept_player_bet(&mut state, &player_2, P::Check).unwrap();
+            accept_player_bet(state, &first_player, P::Check).unwrap();
+            accept_player_bet(state, &second_player, P::Check).unwrap();
 
             assert_eq!(cards_on_table(&state).len(), 5);
             if game_fixture == GameFixture::Round4 {
-                return (state, (player_1, player_2));
+                return;
+            }
+
+            accept_player_bet(state, &first_player, P::Check).unwrap();
+            accept_player_bet(state, &second_player, P::Check).unwrap();
+
+            assert_eq!(state.status, state::GameStatus::Complete);
+            if game_fixture == GameFixture::Complete {
+                return;
             }
 
             unreachable!();
@@ -1774,10 +1996,10 @@ mod tests {
 
             // higher value cards first
             let winner = state.players.get_mut(winner).unwrap();
-            winner.cards = (deck.pop().unwrap(), deck.pop().unwrap());
+            winner.cards = (deck.pop(), deck.pop());
             // then lower value cards
             let loser = state.players.get_mut(loser).unwrap();
-            loser.cards = (deck.pop().unwrap(), deck.pop().unwrap());
+            loser.cards = (deck.pop(), deck.pop());
 
             // set the round deck
             state.round.deck = cards::Deck::ordered();

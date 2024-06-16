@@ -40,8 +40,8 @@ impl Deck {
         }
         Deck(deck)
     }
-    pub fn pop(&mut self) -> Option<Card> {
-        self.0.pop()
+    pub fn pop(&mut self) -> Card {
+        self.0.pop().expect("deck is empty")
     }
     pub fn is_fresh(&self) -> bool {
         self.0.len() == 52

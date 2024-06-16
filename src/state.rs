@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::cards::{Card, Deck};
+use crate::cards::{self, Card, Deck};
 
 use axum::body::Bytes;
 pub use id::PlayerId;
@@ -17,7 +17,7 @@ pub const TICKER_ITEM_TIMEOUT_SECONDS: u64 = 10;
 pub const TICKER_ITEM_GAP_MILLISECONDS: u64 = 500;
 pub const PLAYER_TURN_TIMEOUT_SECONDS: u64 = 60;
 pub const GAME_IDLE_TIMEOUT_SECONDS: u64 = 300;
-pub const MAX_PLAYERS: usize = 8;
+pub const MAX_PLAYERS: usize = 10;
 
 pub struct State {
     pub players: Players,
@@ -52,18 +52,35 @@ pub struct Round {
     pub players_turn: Option<PlayerId>,
     pub raises: Vec<(PlayerId, u64)>,
     pub calls: Vec<(PlayerId, u64)>,
+    pub completed: Option<CompletedRound>,
 }
 
 #[derive(Clone)]
 pub struct Player {
     pub name: String,
     pub id: PlayerId,
+    pub funds_token: token::Token,
     pub balance: u64,
     pub stake: u64,
     pub folded: bool,
-    pub photo: Option<(Bytes, uuid::Uuid)>,
+    pub photo: Option<(Arc<Bytes>, token::Token)>,
     pub ttl: Option<dt::Instant>,
     pub cards: (Card, Card),
+}
+
+#[derive(Debug, Clone)]
+pub struct CompletedRound {
+    pub winners: Vec<RoundWinner>,
+    pub best_hand: Option<(Vec<PlayerId>, cards::HandStrength)>,
+    pub hide_cards: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct RoundWinner {
+    pub player_id: PlayerId,
+    pub hand: Option<cards::HandStrength>,
+    pub winnings: u64,
+    pub total_pot_winnings: u64,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -105,6 +122,41 @@ mod id {
     impl Default for PlayerId {
         fn default() -> Self {
             PlayerId(uuid::Uuid::new_v4().to_string())
+        }
+    }
+}
+
+pub mod token {
+    use std::fmt::Display;
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct Token {
+        pub value: String,
+    }
+
+    impl AsRef<str> for Token {
+        #[inline]
+        fn as_ref(&self) -> &str {
+            <String as AsRef<str>>::as_ref(&self.value)
+        }
+    }
+
+    impl Default for Token {
+        fn default() -> Self {
+            let guid = &uuid::Uuid::new_v4();
+            let guid = guid.as_hyphenated().to_string();
+            let (hash, _) = guid.split_once('-').expect("uuid should have hyphen");
+
+            Self {
+                value: hash.to_string(),
+            }
+        }
+    }
+
+    impl Display for Token {
+        #[inline]
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            <String as Display>::fmt(&self.value, f)
         }
     }
 }
@@ -169,10 +221,7 @@ pub mod dt {
         use super::Instant;
 
         #[derive(Clone, Default)]
-        pub struct SignalInstant(
-            Instant,
-            Arc<Mutex<Vec<tokio::sync::oneshot::Sender<Instant>>>>,
-        );
+        pub struct SignalInstant(Instant, Arc<Mutex<Vec<oneshot::Sender<Instant>>>>);
 
         impl SignalInstant {
             pub fn as_u64(&self) -> u64 {
@@ -262,6 +311,7 @@ pub mod ticker {
         PaidPot(PlayerId, u64),
         PlayerPhotoUploaded(PlayerId),
         PlayerSentEmoji(PlayerId, emoji::TickerEmoji),
+        PlayerTransferredBalance(PlayerId, PlayerId, u64),
         BallotOpened(ballot::BallotAction),
         BallotClosed(ballot::BallotAction, BallotPassed, BallotClosedReason),
         PlayerVoted(PlayerId, PlayerVote),
@@ -361,6 +411,19 @@ pub mod ticker {
                         .map(|p| p.name.as_str())
                         .unwrap_or_default();
                     format!("Player {}: {}", player, emoji)
+                }
+                Self::PlayerTransferredBalance(from, to, amount) => {
+                    let from = state
+                        .players
+                        .get(from)
+                        .map(|p| p.name.as_str())
+                        .unwrap_or_default();
+                    let to = state
+                        .players
+                        .get(to)
+                        .map(|p| p.name.as_str())
+                        .unwrap_or_default();
+                    format!("Player {} transferred £{} to {}", from, amount, to)
                 }
                 Self::BallotOpened(action) => match action {
                     ballot::BallotAction::KickPlayer(player_id) => {

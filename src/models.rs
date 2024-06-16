@@ -32,6 +32,32 @@ pub(crate) enum PlayAction {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PlayerSendRequest {
+    pub(crate) message: String,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PlayerAccountsResponse {
+    pub(crate) accounts: Vec<PlayerAccount>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PlayerAccount {
+    pub(crate) name: String,
+    pub(crate) account_id: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TransferRequest {
+    pub(crate) amount: u64,
+    pub(crate) to: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct PollQuery {
     pub since: Option<u64>,
     pub timeout: Option<u64>,
@@ -70,7 +96,7 @@ pub(crate) struct GameClientRoom {
 pub(crate) struct CompletedGame {
     pub(crate) winner_name: Option<String>,
     pub(crate) winning_hand: Option<String>,
-    pub(crate) player_cards: Vec<((CardSuite, CardValue), (CardSuite, CardValue))>,
+    pub(crate) player_cards: Vec<Option<((CardSuite, CardValue), (CardSuite, CardValue))>>,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
