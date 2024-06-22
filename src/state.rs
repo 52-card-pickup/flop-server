@@ -27,6 +27,7 @@ pub struct State {
     pub last_update: dt::SignalInstant,
     pub ticker: ticker::Ticker,
     pub status: GameStatus,
+    pub join_code: str::JoinCode,
 }
 
 #[derive(Default)]
@@ -107,6 +108,45 @@ mod id {
     impl Default for PlayerId {
         fn default() -> Self {
             PlayerId(uuid::Uuid::new_v4().to_string())
+        }
+    }
+}
+
+pub mod str {
+    use rand::Rng;
+    use std::fmt::Display;
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct JoinCode(String);
+
+    impl Display for JoinCode {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{}", self.0)
+        }
+    }
+
+    impl TryFrom<&str> for JoinCode {
+        type Error = &'static str;
+
+        fn try_from(value: &str) -> Result<Self, Self::Error> {
+            if value.len() != 4 {
+                return Err("Join code must be 4 characters long");
+            }
+            if !value.chars().all(|c| c.is_ascii_uppercase()) {
+                return Err("Join code must be uppercase letters");
+            }
+            Ok(JoinCode(value.to_string()))
+        }
+    }
+
+    impl Default for JoinCode {
+        fn default() -> Self {
+            let mut rng = rand::thread_rng();
+            let code = std::iter::repeat(())
+                .map(|()| rng.gen_range('A'..='Z'))
+                .take(4)
+                .collect::<String>();
+            JoinCode(code)
         }
     }
 }
@@ -197,7 +237,7 @@ pub mod dt {
         use std::future::Future;
         use std::sync::{Arc, Mutex};
 
-        use tokio::sync::oneshot;
+        use tokio::sync::oneshot::{self, Sender};
 
         use super::Instant;
 
@@ -206,7 +246,7 @@ pub mod dt {
 
         impl SignalInstant {
             pub fn as_u64(&self) -> u64 {
-                self.0.into()
+                self.inner.into()
             }
 
             pub fn set_now(&mut self) {
@@ -385,6 +425,10 @@ pub mod ticker {
                         .unwrap_or_default();
                     format!("Player {} transferred £{} to {}", from, amount, to)
                 }
+            }
+
+            pub fn triggered(&self) -> bool {
+                self.triggered
             }
         }
     }

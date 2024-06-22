@@ -24,7 +24,7 @@ pub(crate) fn spawn_game_worker(state: state::SharedState) {
         let now_ms: u64 = now.into();
         let idle_ms = match status {
             state::GameStatus::Joining => Some(state::GAME_IDLE_TIMEOUT_SECONDS * 1000),
-            state::GameStatus::Complete => Some(state::GAME_IDLE_TIMEOUT_SECONDS * 1000 * 4),
+            state::GameStatus::Complete => Some(state::GAME_IDLE_TIMEOUT_SECONDS * 1000),
             state::GameStatus::Playing => None,
         };
 
@@ -39,7 +39,6 @@ pub(crate) fn spawn_game_worker(state: state::SharedState) {
             if !state.round.deck.is_fresh() || state.status == state::GameStatus::Complete {
                 info!("Game idle timeout, resetting game");
                 *state = state::State::default();
-                state.last_update.set_now();
             }
         };
 
