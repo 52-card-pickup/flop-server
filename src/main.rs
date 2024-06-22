@@ -1,8 +1,12 @@
-use std::sync::{Arc, RwLock};
+use std::{
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    sync::Arc,
+};
 
 use aide::{openapi::OpenApi, transform::TransformOpenApi};
 use axum::Extension;
 use tokio::net::TcpListener;
+use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
 use tracing::info;
 
@@ -41,9 +45,10 @@ async fn main() {
         .layer(Extension(Arc::new(api)))
         .layer(CorsLayer::permissive());
 
-    // run our app with hyper, listening globally on port 5000
-    let addr = format!("0.0.0.0:{}", port());
-    let listener = TcpListener::bind(&addr).await.unwrap();
+    // run our app with hyper, listening globally - by default on port 5000
+    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port());
+    let listener = TcpListener::bind(addr).await.unwrap();
+
     let docs_url = docs_url(listener.local_addr().unwrap());
     info!("listening on {}", listener.local_addr().unwrap());
     info!("Example docs are accessible at {}", docs_url);

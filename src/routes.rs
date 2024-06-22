@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::{
     game, models,
     state::{self, SharedState},
@@ -8,8 +10,9 @@ use aide::axum::{
     ApiRouter,
 };
 use axum::{
-    extract::{Path, Query, State},
-    http::StatusCode,
+    body,
+    extract::{Multipart, Path, Query, State},
+    http::{header, HeaderValue, StatusCode},
     Json,
 };
 use tracing::info;
@@ -22,6 +25,23 @@ pub(crate) fn api_routes(state: state::SharedState) -> ApiRouter {
         .api_route("/room/close", post_with(close_room, docs::close_room))
         .api_route("/room/reset", post_with(reset_room, docs::reset_room))
         .api_route("/player/:player_id", get_with(player, docs::player))
+        .api_route(
+            "/player/:player_id/send",
+            post_with(player_send, docs::player_send),
+        )
+        .api_route(
+            "/player/:player_id/transfer",
+            get_with(get_player_transfer, docs::get_player_transfer)
+                .post_with(post_player_transfer, docs::post_player_transfer),
+        )
+        .api_route(
+            "/player/:player_id/photo",
+            post_with(post_player_photo, docs::post_player_photo),
+        )
+        .api_route(
+            "/player/photo/:token",
+            get_with(get_player_photo, docs::get_player_photo),
+        )
         .api_route("/join", post_with(join, docs::join))
         .api_route("/play", post_with(play, docs::play))
         .with_state(state)
@@ -33,7 +53,7 @@ pub(crate) async fn room(
 ) -> Json<models::GameClientRoom> {
     utils::wait_for_update(&state, query).await;
 
-    let state = state.read().unwrap();
+    let state = state.read().await;
 
     let game_client_state = models::GameClientRoom {
         state: game::game_phase(&state),
@@ -42,6 +62,7 @@ pub(crate) async fn room(
         cards: game::cards_on_table(&state),
         completed: game::completed_game(&state),
         join_code: state.join_code.to_string(),
+        ticker: game::ticker(&state),
         last_update: state.last_update.as_u64(),
     };
 
@@ -55,14 +76,14 @@ pub(crate) async fn player(
 ) -> JsonResult<models::GamePlayerState> {
     utils::wait_for_update(&state, query).await;
 
-    let state = state.read().unwrap();
+    let state = state.read().await;
     let player = utils::validate_player(&path.player_id, &state)?;
 
     let game_player_state = models::GamePlayerState {
         state: game::game_phase(&state),
         balance: player.balance,
-        cards: game::cards_in_hand(&state, &player.id),
-        your_turn: state.round.players_turn.as_ref() == Some(&player.id),
+        cards: game::cards_in_hand(&state, &player.id).unwrap(),
+        your_turn: game::is_player_turn(&state, &player.id),
         call_amount: game::call_amount(&state).unwrap_or(0),
         min_raise_to: game::min_raise_to(&state),
         turn_expires_dt: game::turn_expires_dt(&state, &player.id),
@@ -73,11 +94,171 @@ pub(crate) async fn player(
     Ok(Json(game_player_state))
 }
 
+pub(crate) async fn player_send(
+    State(state): State<SharedState>,
+    Path(player_id): Path<String>,
+    Json(payload): Json<models::PlayerSendRequest>,
+) -> JsonResult<()> {
+    let mut state = state.write().await;
+    let player = utils::validate_player(&player_id, &state)?;
+
+    if payload.message.is_empty() {
+        info!(
+            "Player {} failed to send message: message is empty",
+            player_id
+        );
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    use state::ticker::emoji::TickerEmoji;
+    let emoji = match payload.message.as_str() {
+        "👍" | ":+1:" => TickerEmoji::thumbs_up(),
+        "👎" | ":-1:" => TickerEmoji::thumbs_down(),
+        "👏" | ":clapping:" => TickerEmoji::clapping(),
+        "⏳" | ":time:" => TickerEmoji::time(),
+        "🤔" | ":thinking:" => TickerEmoji::thinking(),
+        "😂" | ":money:" => TickerEmoji::money(),
+        "😡" | ":angry:" => TickerEmoji::angry(),
+        _ => {
+            info!("Player {} failed to send message: invalid emoji", player_id);
+            return Err(StatusCode::BAD_REQUEST);
+        }
+    };
+    state
+        .ticker
+        .emit(state::TickerEvent::PlayerSentEmoji(player.id, emoji));
+
+    state.last_update.set_now();
+    info!("Player {} sent message", player_id);
+    Ok(Json(()))
+}
+
+pub(crate) async fn get_player_transfer(
+    State(state): State<SharedState>,
+    Path(player_id): Path<String>,
+) -> JsonResult<models::PlayerAccountsResponse> {
+    let state = state.read().await;
+    let player = utils::validate_player(&player_id, &state)?;
+
+    let accounts = state
+        .players
+        .values()
+        .filter(|p| p.id != player.id)
+        .map(|p| models::PlayerAccount {
+            name: p.name.clone(),
+            account_id: p.funds_token.to_string(),
+        })
+        .collect();
+
+    Ok(Json(models::PlayerAccountsResponse { accounts }))
+}
+
+pub(crate) async fn post_player_transfer(
+    State(state): State<SharedState>,
+    Path(player_id): Path<String>,
+    Json(payload): Json<models::TransferRequest>,
+) -> JsonResult<()> {
+    let mut state = state.write().await;
+    let player = utils::validate_player(&player_id, &state)?;
+
+    if payload.amount == 0 {
+        info!("Player {} failed to transfer: amount is zero", player_id);
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    game::transfer_funds(&mut state, &player.id, &payload).map_err(|_| StatusCode::BAD_REQUEST)?;
+
+    info!(
+        "Player {} transferred {} to player {}",
+        player.id, payload.amount, payload.to
+    );
+
+    state.last_update.set_now();
+    Ok(Json(()))
+}
+
+pub(crate) async fn get_player_photo(
+    State(state): State<SharedState>,
+    Path(token): Path<String>,
+) -> Result<(header::HeaderMap, body::Bytes), StatusCode> {
+    let state = state.read().await;
+    let photo = state
+        .players
+        .values()
+        .find(|p| p.photo.as_ref().map(|(_, token)| token.as_ref()) == Some(token.as_str()))
+        .and_then(|p| p.photo.as_ref())
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    let mut headers = header::HeaderMap::new();
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("image/jpeg"));
+    headers.insert(
+        header::CONTENT_DISPOSITION,
+        HeaderValue::from_str("inline").unwrap(),
+    );
+    headers.insert(
+        header::ETAG,
+        HeaderValue::from_str(&photo.1.to_string()).unwrap(),
+    );
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=31536000"),
+    );
+
+    let bytes: body::Bytes = photo.0.as_ref().clone();
+    Ok((headers, bytes.into()))
+}
+
+pub(crate) async fn post_player_photo(
+    State(state): State<SharedState>,
+    Path(player_id): Path<String>,
+    mut multipart: Multipart,
+) -> JsonResult<()> {
+    let player_id = {
+        let state = state.read().await;
+        utils::validate_player(&player_id, &state)?.id
+    };
+
+    let field = multipart
+        .next_field()
+        .await
+        .map_err(|_| StatusCode::BAD_REQUEST)?
+        .ok_or(StatusCode::BAD_REQUEST)?;
+
+    if field.content_type() != Some("image/jpeg") {
+        info!(
+            "Player {} failed to upload photo: invalid content type",
+            player_id
+        );
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let name = field.name().unwrap().to_string();
+    let data = field.bytes().await.unwrap();
+    let size = data.len();
+
+    let mut state = state.write().await;
+    let player = state
+        .players
+        .get_mut(&player_id)
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    let guid = state::token::Token::default();
+    player.photo = Some((Arc::new(data), guid));
+    state
+        .ticker
+        .emit(state::TickerEvent::PlayerPhotoUploaded(player_id.clone()));
+
+    state.last_update.set_now();
+    info!(
+        "Player {} uploaded photo: name = {}, size = {}",
+        player_id, name, size
+    );
+    Ok(Json(()))
+}
+
 pub(crate) async fn play(
     State(state): State<SharedState>,
     Json(payload): Json<models::PlayRequest>,
 ) -> JsonResult<()> {
-    let mut state = state.write().unwrap();
+    let mut state = state.write().await;
     let player = utils::validate_player(&payload.player_id, &state)?;
     if let Err(err) = game::reset_ttl(&mut state, &player.id) {
         info!("Player {} failed to play: {}", payload.player_id, err);
@@ -116,17 +297,18 @@ pub(crate) async fn join(
     State(state): State<SharedState>,
     Json(payload): Json<models::JoinRequest>,
 ) -> JsonResult<models::JoinResponse> {
-    let mut state = state.write().unwrap();
-
     if payload.name.is_empty()
-        || payload.name.len() > 20
+        || payload.name.len() > 24
         || payload.name.contains(|c: char| c.is_control())
     {
         info!("Player failed to join: name is invalid");
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    let id = match game::add_new_player(&mut state, &payload.name) {
+    let mut state = state.write().await;
+    let name = payload.name.replace(char::is_whitespace, " ");
+
+    let id = match game::add_new_player(&mut state, name.trim()) {
         Ok(id) => id,
         Err(err) => {
             info!("Player failed to join: {}", err);
@@ -141,7 +323,7 @@ pub(crate) async fn join(
 }
 
 pub(crate) async fn close_room(State(state): State<SharedState>) -> JsonResult<()> {
-    let mut state = state.write().unwrap();
+    let mut state = state.write().await;
 
     game::start_game(&mut state).map_err(|err| {
         info!("Failed to close room: {}", err);
@@ -155,7 +337,7 @@ pub(crate) async fn close_room(State(state): State<SharedState>) -> JsonResult<(
 }
 
 pub(crate) async fn reset_room(State(state): State<SharedState>) -> Json<()> {
-    let mut state = state.write().unwrap();
+    let mut state = state.write().await;
 
     *state = state::State::default();
 
@@ -169,7 +351,10 @@ mod utils {
     use axum::http::StatusCode;
     use tracing::info;
 
-    use crate::{models, state};
+    use crate::{
+        models,
+        state::{self, SharedState},
+    };
 
     pub fn validate_player(
         player_id: &str,
@@ -186,13 +371,10 @@ mod utils {
         }
     }
 
-    pub async fn wait_for_update(
-        state: &std::sync::Arc<std::sync::RwLock<state::State>>,
-        query: models::PollQuery,
-    ) {
+    pub async fn wait_for_update(state: &SharedState, query: models::PollQuery) {
         if let Some(last_update) = query.since {
             let rx = {
-                let state = state.read().unwrap();
+                let state = state.read().await;
                 state.last_update.wait_for(last_update.into())
             };
 
@@ -216,6 +398,26 @@ pub mod docs {
 
     pub fn player(op: TransformOperation) -> TransformOperation {
         op.description("Get the current state of a player.")
+    }
+
+    pub fn player_send(op: TransformOperation) -> TransformOperation {
+        op.description("Send a message to the game room.")
+    }
+
+    pub fn get_player_transfer(op: TransformOperation) -> TransformOperation {
+        op.description("Get the account details of other players.")
+    }
+
+    pub fn post_player_transfer(op: TransformOperation) -> TransformOperation {
+        op.description("Transfer funds to another player.")
+    }
+
+    pub fn post_player_photo(op: TransformOperation) -> TransformOperation {
+        op.description("Upload a photo for a player.")
+    }
+
+    pub fn get_player_photo(op: TransformOperation) -> TransformOperation {
+        op.description("Get a photo for a player.")
     }
 
     pub fn play(op: TransformOperation) -> TransformOperation {
