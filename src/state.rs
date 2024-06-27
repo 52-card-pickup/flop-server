@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use crate::cards::{self, Card, Deck};
 
@@ -38,6 +38,7 @@ pub struct Round {
     pub raises: Vec<(PlayerId, u64)>,
     pub calls: Vec<(PlayerId, u64)>,
     pub completed: Option<CompletedRound>,
+    pub pending_actions: HashMap<PlayerId, AutoBetAction>,
 }
 
 #[derive(Clone)]
@@ -81,6 +82,13 @@ pub enum BetAction {
     Check,
     Call,
     RaiseTo(u64),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoBetAction {
+    Check,
+    Call(u64),
+    Fold,
 }
 
 mod id {
@@ -491,14 +499,11 @@ pub mod ticker {
             self.events.iter()
         }
 
+        #[cfg(test)]
         pub fn active_items(&self, now: Instant) -> impl Iterator<Item = &TickerItem> {
             self.events.iter().filter(move |item| {
                 item.start.as_u64() <= now.as_u64() && item.end.as_u64() > now.as_u64()
             })
-        }
-
-        pub fn timeout_ms(&self) -> u64 {
-            super::TICKER_ITEM_TIMEOUT_SECONDS * 1000
         }
     }
 

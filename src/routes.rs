@@ -83,6 +83,7 @@ pub(crate) async fn player(
         balance: player.balance,
         cards: game::cards_in_hand(&state, &player.id).unwrap(),
         your_turn: game::is_player_turn(&state, &player.id),
+        playable: game::is_player_playable(&state, &player.id),
         call_amount: game::call_amount(&state).unwrap_or(0),
         min_raise_to: game::min_raise_to(&state),
         turn_expires_dt: game::turn_expires_dt(&state, &player.id),
@@ -262,6 +263,14 @@ pub(crate) async fn play(
     if let Err(err) = game::reset_ttl(&mut state, &player.id) {
         info!("Player {} failed to play: {}", payload.player_id, err);
         return Err(StatusCode::BAD_REQUEST);
+    }
+
+    if state.round.players_turn.as_ref() != Some(&player.id) {
+        if game::queue_bet_action(&mut state, &player.id, &payload.action, payload.stake).is_ok() {
+            state.last_update.set_now();
+            info!("Player {} queued action", payload.player_id);
+            return Ok(Json(()));
+        }
     }
 
     let result = match payload.action {

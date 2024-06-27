@@ -97,20 +97,17 @@ pub(crate) fn start_game(state: &mut state::State) -> Result<(), String> {
         return Err("Not enough players".to_string());
     }
 
-    state.round.cards_on_table.clear();
-    state.round.pot = 0;
-    state.round.completed = None;
-    reset_players(state);
-    next_turn(state, None);
+    let old_deck = std::mem::take(&mut state.round.deck);
+    state.round = state::Round::default();
+
     if state.status == state::GameStatus::Complete {
-        state.round.deck = cards::Deck::default();
-        for player in state.players.values_mut() {
-            let card_1 = state.round.deck.pop();
-            let card_2 = state.round.deck.pop();
-            player.cards = (card_1, card_2);
-        }
+        deal_fresh_deck(state);
+    } else {
+        state.round.deck = old_deck;
     }
 
+    reset_players(state);
+    next_turn(state, None);
     state.status = state::GameStatus::Playing;
     state.ticker.emit(TickerEvent::GameStarted);
 
@@ -220,6 +217,26 @@ pub(crate) fn accept_player_bet(
     Ok(())
 }
 
+pub(crate) fn queue_bet_action(
+    state: &mut state::State,
+    player_id: &state::PlayerId,
+    action: &models::PlayAction,
+    stake: u64,
+) -> Result<(), ()> {
+    let action = match action {
+        models::PlayAction::Check => state::AutoBetAction::Check,
+        models::PlayAction::Call => state::AutoBetAction::Call(stake),
+        models::PlayAction::Fold => state::AutoBetAction::Fold,
+        models::PlayAction::RaiseTo => return Err(()),
+    };
+    state
+        .round
+        .pending_actions
+        .insert(player_id.clone(), action);
+
+    Ok(())
+}
+
 pub fn player_stake_in_round(state: &state::State, player_id: &state::PlayerId) -> u64 {
     // check if player was last to raise, if so, return raise amount
     if let Some((id, stake)) = state.round.raises.last() {
@@ -298,7 +315,15 @@ fn reset_players(state: &mut state::State) {
         player.stake = 0;
         player.folded = false;
     }
-    state.round.players_turn = None;
+}
+
+fn deal_fresh_deck(state: &mut state::State) {
+    state.round.deck = cards::Deck::default();
+    for player in state.players.values_mut() {
+        let card_1 = state.round.deck.pop();
+        let card_2 = state.round.deck.pop();
+        player.cards = (card_1, card_2);
+    }
 }
 
 fn next_turn(state: &mut state::State, current_player_id: Option<&state::PlayerId>) {
@@ -345,7 +370,42 @@ fn next_turn(state: &mut state::State, current_player_id: Option<&state::PlayerI
         }
     }
 
-    state.round.players_turn = next_player_id;
+    state.round.players_turn = next_player_id.clone();
+
+    if let Some((player_id, action)) =
+        next_player_id.and_then(|id| state.round.pending_actions.remove(&id).map(|a| (id, a)))
+    {
+        accept_auto_action(action, state, player_id);
+    }
+}
+
+fn accept_auto_action(
+    action: state::AutoBetAction,
+    state: &mut state::State,
+    player_id: state::PlayerId,
+) {
+    let action_result = match action {
+        state::AutoBetAction::Check => {
+            accept_player_bet(state, &player_id, state::BetAction::Check)
+        }
+        state::AutoBetAction::Call(amount) => {
+            if amount == call_amount(state).unwrap_or(0) {
+                accept_player_bet(state, &player_id, state::BetAction::Call)
+            } else {
+                info!("Player {} auto-called with stale amount", player_id);
+                return;
+            }
+        }
+        state::AutoBetAction::Fold => fold_player(state, &player_id),
+    };
+    match action_result {
+        Ok(_) => {
+            info!("Player {} action accepted", player_id);
+        }
+        Err(e) => {
+            info!("Player {} action failed: {}", player_id, e);
+        }
+    }
 }
 
 fn get_rounds_starting_player(state: &mut state::State) -> Option<state::PlayerId> {
@@ -744,6 +804,14 @@ pub(crate) fn cards_in_hand(
 pub(crate) fn is_player_turn(state: &state::State, player_id: &state::PlayerId) -> bool {
     state.status == state::GameStatus::Playing
         && state.round.players_turn.as_ref() == Some(&player_id)
+}
+
+pub(crate) fn is_player_playable(state: &state::State, player_id: &state::PlayerId) -> bool {
+    state.status == state::GameStatus::Playing
+        && state
+            .players
+            .get(player_id)
+            .map_or(false, |p| !p.folded && p.balance > 0)
 }
 
 pub(crate) fn game_phase(state: &state::State) -> models::GamePhase {
