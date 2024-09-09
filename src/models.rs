@@ -6,12 +6,32 @@ use crate::cards::{CardSuite, CardValue};
 #[serde(rename_all = "camelCase")]
 pub(crate) struct JoinRequest {
     pub(crate) name: String,
+    pub(crate) room_code: Option<String>,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct JoinResponse {
     pub(crate) id: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NewRoomRequest {
+    pub(crate) name: String,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NewRoomResponse {
+    pub(crate) id: String,
+    pub(crate) room_code: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CloseRoomRequest {
+    pub(crate) room_code: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -86,6 +106,7 @@ pub(crate) struct GameClientRoom {
     pub(crate) cards: Vec<(CardSuite, CardValue)>,
     pub(crate) completed: Option<CompletedGame>,
     pub(crate) ticker: Option<String>,
+    pub(crate) room_code: Option<String>,
     pub(crate) last_update: u64,
 }
 
@@ -104,6 +125,7 @@ pub(crate) struct GameClientPlayer {
     pub(crate) balance: u64,
     pub(crate) folded: bool,
     pub(crate) photo: Option<String>,
+    pub(crate) color_hue: u16,
     pub(crate) turn_expires_dt: Option<u64>,
 }
 

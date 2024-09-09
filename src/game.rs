@@ -1,4 +1,7 @@
-use std::collections::HashMap;
+use std::{
+    collections::{hash_map, HashMap},
+    hash::Hash,
+};
 
 use crate::{
     cards, models,
@@ -8,7 +11,7 @@ use crate::{
 use tracing::info;
 
 pub(crate) fn spawn_game_worker(state: state::SharedState) {
-    async fn run_tasks(state: &state::SharedState) {
+    async fn run_tasks(state: &state::RoomState) {
         let now = state::dt::Instant::default();
 
         let (last_update, current_player, status, ticker_expired) = {
@@ -84,7 +87,9 @@ pub(crate) fn spawn_game_worker(state: state::SharedState) {
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-            run_tasks(&state).await;
+            for state in state.iter().await {
+                run_tasks(&state).await;
+            }
         }
     });
 }
@@ -120,6 +125,7 @@ pub(crate) fn start_game(state: &mut state::State) -> Result<(), String> {
 pub(crate) fn add_new_player(
     state: &mut state::State,
     player_name: &str,
+    player_id: state::PlayerId,
 ) -> Result<state::PlayerId, String> {
     if state.status == state::GameStatus::Playing {
         return Err("Game already started".to_string());
@@ -127,12 +133,13 @@ pub(crate) fn add_new_player(
     if state.players.len() >= state::MAX_PLAYERS {
         return Err("Room is full".to_string());
     }
+    let name = player_name.replace(char::is_whitespace, " ");
+
     let funds_token = state::token::Token::default();
-    let player_id = state::PlayerId::default();
     let card_1 = state.round.deck.pop();
     let card_2 = state.round.deck.pop();
     let player = state::Player {
-        name: player_name.to_owned(),
+        name: name.trim().to_owned(),
         id: player_id.clone(),
         funds_token,
         balance: state::STARTING_BALANCE,
@@ -843,6 +850,7 @@ pub(crate) fn completed_game(state: &state::State) -> Option<models::CompletedGa
 }
 
 pub(crate) fn room_players(state: &state::State) -> Vec<models::GameClientPlayer> {
+    let current_player_id = state.round.players_turn.as_ref();
     let players = state
         .players
         .iter()
@@ -851,15 +859,25 @@ pub(crate) fn room_players(state: &state::State) -> Vec<models::GameClientPlayer
             balance: p.balance,
             folded: p.folded,
             photo: player_photo_url(p),
-            turn_expires_dt: p.ttl.map(|dt| dt.into()),
+            color_hue: player_color_hue(p),
+            turn_expires_dt: p.ttl.map(|dt| dt.into()).filter(|_| {
+                current_player_id == Some(&p.id) && state.status == state::GameStatus::Playing
+            }),
         })
         .collect();
     players
 }
 
 fn player_photo_url(p: &state::Player) -> Option<String> {
-    let (_, token) = p.photo.as_ref()?;
+    let state::PlayerPhoto(_, token) = p.photo.as_ref()?;
     Some(format!("player/photo/{}", token))
+}
+
+fn player_color_hue(p: &state::Player) -> u16 {
+    let mut hasher = hash_map::DefaultHasher::default();
+    p.id.hash(&mut hasher);
+    let degrees = std::hash::Hasher::finish(&hasher) % 360;
+    degrees as u16
 }
 
 pub(crate) fn fold_player(
@@ -1069,11 +1087,11 @@ mod tests {
         let state = &mut state;
         state.round.deck = cards::Deck::ordered();
 
-        let player_1 = add_new_player(state, "player_1").unwrap();
-        let player_2 = add_new_player(state, "player_2").unwrap();
-        let player_3 = add_new_player(state, "player_3").unwrap();
-        let player_4 = add_new_player(state, "player_4").unwrap();
-        let player_5 = add_new_player(state, "player_5").unwrap();
+        let player_1 = fixtures::add_player(state, "player_1").unwrap();
+        let player_2 = fixtures::add_player(state, "player_2").unwrap();
+        let player_3 = fixtures::add_player(state, "player_3").unwrap();
+        let player_4 = fixtures::add_player(state, "player_4").unwrap();
+        let player_5 = fixtures::add_player(state, "player_5").unwrap();
 
         assert_eq!(state.players.len(), 5);
         assert_eq!(state.status, state::GameStatus::Joining);
@@ -1493,8 +1511,8 @@ mod tests {
         ) -> (state::State, (state::PlayerId, state::PlayerId)) {
             let mut state = state::State::default();
 
-            let player_1 = add_new_player(&mut state, "player_1").unwrap();
-            let player_2 = add_new_player(&mut state, "player_2").unwrap();
+            let player_1 = add_player(&mut state, "player_1").unwrap();
+            let player_2 = add_player(&mut state, "player_2").unwrap();
 
             assert_eq!(state.players.len(), 2);
             assert_eq!(state.status, state::GameStatus::Joining);
@@ -1571,9 +1589,9 @@ mod tests {
             let mut state = state::State::default();
             state.round.deck = cards::Deck::ordered();
 
-            let player_1 = add_new_player(&mut state, "player_1").unwrap();
-            let player_2 = add_new_player(&mut state, "player_2").unwrap();
-            let player_3 = add_new_player(&mut state, "player_3").unwrap();
+            let player_1 = add_player(&mut state, "player_1").unwrap();
+            let player_2 = add_player(&mut state, "player_2").unwrap();
+            let player_3 = add_player(&mut state, "player_3").unwrap();
 
             assert_eq!(state.players.len(), 3);
             assert_eq!(state.status, state::GameStatus::Joining);
@@ -1607,6 +1625,14 @@ mod tests {
 
             // set the round deck
             state.round.deck = cards::Deck::ordered();
+        }
+
+        pub fn add_player(
+            state: &mut state::State,
+            player_name: &str,
+        ) -> Result<state::PlayerId, String> {
+            let player_id = state::PlayerId::default();
+            super::add_new_player(state, player_name, player_id)
         }
     }
 }
