@@ -14,10 +14,11 @@ use aide::axum::{
 };
 use axum::{
     body,
-    extract::{FromRequestParts, Multipart, Path, Query, State},
+    extract::{Multipart, Path, Query, State},
     http::{header, HeaderValue, StatusCode},
     Json,
 };
+use axum_extra::TypedHeader;
 use tracing::info;
 
 type JsonResult<T> = Result<Json<T>, StatusCode>;
@@ -25,6 +26,7 @@ type JsonResult<T> = Result<Json<T>, StatusCode>;
 pub(crate) fn api_routes(state: state::SharedState) -> ApiRouter {
     ApiRouter::new()
         .api_route("/room", get_with(room, docs::room))
+        .api_route("/room/peek", post_with(peek_room, docs::peek_room))
         .api_route("/room/close", post_with(close_room, docs::close_room))
         .api_route("/room/reset", post_with(reset_room, docs::reset_room))
         .api_route("/player/:player_id", get_with(player, docs::player))
@@ -64,19 +66,13 @@ pub(crate) async fn dump(State(state): State<SharedState>) -> JsonResult<HashMap
 
 pub(crate) async fn room(
     State(state): State<SharedState>,
-    request: axum::extract::Request,
+    Query(query): Query<models::PollQuery>,
+    room_code: Option<TypedHeader<models::headers::RoomCodeHeader>>,
 ) -> JsonResult<models::GameClientRoom> {
     static EMPTY: OnceLock<state::RoomState> = OnceLock::new();
-    let room_code = request
-        .headers()
-        .get("room-code")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
 
-    let (mut parts, _) = request.into_parts();
-    let query = Query::<models::PollQuery>::from_request_parts(&mut parts, &state).await;
-    let Query(query) = query.map_err(|_| StatusCode::BAD_REQUEST)?;
-
+    let room_code: Option<String> = room_code.map(|TypedHeader(room_code)| room_code.into());
+    let room_code = room_code.filter(|s: &String| !s.is_empty());
     let room_code = match utils::wait_by_room_code(&state, query, room_code.as_deref()).await {
         Ok(room_code) => Some(room_code),
         Err(StatusCode::NOT_FOUND) => None,
@@ -402,7 +398,10 @@ pub(crate) async fn join(
     state.last_update.set_now();
 
     info!("Player {} joined", id);
-    Ok(Json(models::JoinResponse { id: id.to_string() }))
+    Ok(Json(models::JoinResponse {
+        id: id.to_string(),
+        room_code: room_code.to_string(),
+    }))
 }
 
 pub(crate) async fn new_room(
@@ -438,6 +437,30 @@ pub(crate) async fn new_room(
     }))
 }
 
+pub(crate) async fn peek_room(
+    State(state): State<SharedState>,
+    Json(payload): Json<models::PeekRoomRequest>,
+) -> JsonResult<models::PeekRoomResponse> {
+    let room_code = payload
+        .room_code
+        .parse()
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+
+    let state = state
+        .get_room(&room_code)
+        .await
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    let state = state.read().await;
+
+    let peek = models::PeekRoomResponse {
+        state: game::game_phase(&state),
+        player_count: state.players.len(),
+    };
+
+    Ok(Json(peek))
+}
+
 pub(crate) async fn close_room(
     State(state): State<SharedState>,
     json: Option<Json<models::CloseRoomRequest>>,
@@ -469,12 +492,11 @@ pub(crate) async fn close_room(
 
 pub(crate) async fn reset_room(
     State(state): State<SharedState>,
-    request: axum::extract::Request,
+    room_code: Option<TypedHeader<models::headers::RoomCodeHeader>>,
 ) -> JsonResult<()> {
-    let room_code = request
-        .headers()
-        .get("room-code")
-        .and_then(|v| v.to_str().ok())
+    let room_code: Option<state::room::RoomCode> = room_code
+        .map(|TypedHeader(room_code)| room_code.into())
+        .filter(|s: &String| !s.is_empty())
         .map(|s| s.parse())
         .transpose()
         .map_err(|_| StatusCode::BAD_REQUEST)?;
@@ -623,6 +645,10 @@ pub mod docs {
 
     pub fn join(op: TransformOperation) -> TransformOperation {
         op.description("Join the game room.")
+    }
+
+    pub fn peek_room(op: TransformOperation) -> TransformOperation {
+        op.description("Peek at the game room from join code.")
     }
 
     pub fn close_room(op: TransformOperation) -> TransformOperation {

@@ -103,7 +103,7 @@ impl SharedState {
     }
 
     pub async fn cleanup(&self) {
-        let mut rooms = self.states.write().unwrap();
+        let mut rooms = self.states.write().unwrap().clone();
         let mut to_remove = Vec::new();
 
         for (room_code, state) in rooms.iter() {
@@ -115,7 +115,7 @@ impl SharedState {
 
             let now = Instant::default().as_u64();
             let last_update = state.last_update.as_u64();
-            let room_expires_at = last_update + GAME_IDLE_CLEANUP_SECONDS * 1000;
+            let room_expires_at = last_update + GAME_IDLE_TIMEOUT_SECONDS * 1000;
 
             if room_expires_at < now {
                 to_remove.push(room_code.clone());
@@ -232,14 +232,11 @@ pub mod room {
             if char_count != ROOM_CODE_LENGTH {
                 return Err(());
             }
-            if !s
-                .chars()
-                .all(|c| c.is_ascii_alphabetic() && c.is_uppercase())
-            {
+            if !s.chars().all(|c| c.is_ascii_alphabetic()) {
                 return Err(());
             }
 
-            Ok(Self(s.to_string()))
+            Ok(Self(s.to_ascii_uppercase()))
         }
     }
 
@@ -266,7 +263,6 @@ pub const TICKER_ITEM_TIMEOUT_SECONDS: u64 = 10;
 pub const TICKER_ITEM_GAP_MILLISECONDS: u64 = 500;
 pub const PLAYER_TURN_TIMEOUT_SECONDS: u64 = 60;
 pub const GAME_IDLE_TIMEOUT_SECONDS: u64 = 300;
-pub const GAME_IDLE_CLEANUP_SECONDS: u64 = 30;
 pub const ROOM_CODE_LENGTH: usize = 4;
 pub const MAX_PLAYERS: usize = 10;
 

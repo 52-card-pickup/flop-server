@@ -6,8 +6,10 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-aide = { version = "0.13.3", features = ["axum", "redoc", "scalar", "axum-multipart"] }
+aide = { version = "0.13.3", features = ["axum", "scalar", "axum-multipart", "axum-headers"] }
 axum = { version = "0.7.4", features = ["multipart"] }
+axum-extra = { version = "0.9.3", features = ["typed-header"] }
+headers = "0.4.0"
 rand = "0.8.5"
 schemars = "0.8.16"
 serde = { version = "1.0.197", features = ["derive"] }

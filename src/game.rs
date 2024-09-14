@@ -87,6 +87,9 @@ pub(crate) fn spawn_game_worker(state: state::SharedState) {
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+
+            state.cleanup().await;
+
             for state in state.iter().await {
                 run_tasks(&state).await;
             }
@@ -133,13 +136,18 @@ pub(crate) fn add_new_player(
     if state.players.len() >= state::MAX_PLAYERS {
         return Err("Room is full".to_string());
     }
-    let name = player_name.replace(char::is_whitespace, " ");
+    
+    let player_name = player_name.replace(char::is_whitespace, " ");
+    let player_name = player_name.trim().to_owned();
+    if player_name.is_empty() {
+        return Err("Name cannot be empty".to_string());
+    }
 
     let funds_token = state::token::Token::default();
     let card_1 = state.round.deck.pop();
     let card_2 = state.round.deck.pop();
     let player = state::Player {
-        name: name.trim().to_owned(),
+        name: player_name,
         id: player_id.clone(),
         funds_token,
         balance: state::STARTING_BALANCE,

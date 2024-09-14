@@ -13,6 +13,7 @@ pub(crate) struct JoinRequest {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct JoinResponse {
     pub(crate) id: String,
+    pub(crate) room_code: String,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -32,6 +33,19 @@ pub(crate) struct NewRoomResponse {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CloseRoomRequest {
     pub(crate) room_code: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PeekRoomRequest {
+    pub(crate) room_code: String,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PeekRoomResponse {
+    pub(crate) state: GamePhase,
+    pub(crate) player_count: usize,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -138,4 +152,44 @@ pub(crate) enum GamePhase {
     Waiting,
     Playing,
     Complete,
+}
+
+pub mod headers {
+    pub(crate) struct RoomCodeHeader(pub(crate) String);
+
+    static ROOM_CODE_HEADER_NAME: std::sync::OnceLock<axum::http::HeaderName> =
+        std::sync::OnceLock::new();
+
+    impl Into<String> for RoomCodeHeader {
+        fn into(self) -> String {
+            self.0
+        }
+    }
+
+    impl headers::Header for RoomCodeHeader {
+        fn name() -> &'static axum::http::HeaderName {
+            ROOM_CODE_HEADER_NAME.get_or_init(|| axum::http::HeaderName::from_static("room-code"))
+        }
+
+        fn decode<'i, I>(values: &mut I) -> Result<Self, headers::Error>
+        where
+            Self: Sized,
+            I: Iterator<Item = &'i axum::http::HeaderValue>,
+        {
+            let value = values
+                .next()
+                .ok_or_else(|| headers::Error::invalid())?
+                .to_str()
+                .map_err(|_| headers::Error::invalid())?;
+
+            Ok(Self(value.to_string()))
+        }
+
+        fn encode<E: Extend<axum::http::HeaderValue>>(&self, values: &mut E) {
+            match axum::http::HeaderValue::from_str(&self.0) {
+                Ok(value) => values.extend(std::iter::once(value)),
+                Err(_) => values.extend(std::iter::once(axum::http::HeaderValue::from_static(""))),
+            }
+        }
+    }
 }
