@@ -117,6 +117,7 @@ pub(crate) async fn player(
         your_turn: game::is_player_turn(&state, &player.id),
         call_amount: game::call_amount(&state).unwrap_or(0),
         min_raise_to: game::min_raise_to(&state),
+        players_count: state.players.len(),
         turn_expires_dt: game::turn_expires_dt(&state, &player.id),
         last_update: state.last_update.as_u64(),
         current_round_stake: game::player_stake_in_round(&state, &player.id),
@@ -455,7 +456,7 @@ pub(crate) async fn peek_room(
 
     let peek = models::PeekRoomResponse {
         state: game::game_phase(&state),
-        player_count: state.players.len(),
+        players_count: state.players.len(),
     };
 
     Ok(Json(peek))

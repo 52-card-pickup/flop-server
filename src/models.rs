@@ -45,7 +45,7 @@ pub(crate) struct PeekRoomRequest {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PeekRoomResponse {
     pub(crate) state: GamePhase,
-    pub(crate) player_count: usize,
+    pub(crate) players_count: usize,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -106,6 +106,7 @@ pub(crate) struct GamePlayerState {
     pub(crate) your_turn: bool,
     pub(crate) call_amount: u64,
     pub(crate) min_raise_to: u64,
+    pub(crate) players_count: usize,
     pub(crate) turn_expires_dt: Option<u64>,
     pub(crate) last_update: u64,
     pub(crate) current_round_stake: u64,
