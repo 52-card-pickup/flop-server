@@ -386,7 +386,6 @@ pub(crate) async fn join(
         .await
         .ok_or(StatusCode::NOT_FOUND)?;
     let mut state = state.write().await;
-    info!("Received room state for room = {:?}", room_code);
 
     let id = match game::add_new_player(&mut state, &payload.name, player_id) {
         Ok(id) => id,
