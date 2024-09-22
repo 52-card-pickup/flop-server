@@ -4,9 +4,10 @@ use crate::cards::{self, Card, Deck};
 
 use axum::body::Bytes;
 use dt::Instant;
+use tokio::sync::RwLock;
+
 pub use id::PlayerId;
 pub use ticker::TickerEvent;
-use tokio::sync::RwLock;
 
 use self::players::Players;
 
@@ -16,6 +17,7 @@ pub type RoomState = Arc<RwLock<State>>;
 pub struct SharedState {
     states: Arc<std::sync::RwLock<HashMap<room::RoomCode, RoomState>>>,
     registry: Arc<RwLock<room::RoomRegistry>>,
+    default_config: Arc<std::sync::RwLock<Option<config::RoomConfig>>>,
 }
 
 impl SharedState {
@@ -41,7 +43,7 @@ impl SharedState {
                 }
 
                 let mut rooms = self.states.write().unwrap();
-                let state = Arc::new(RwLock::new(State::default()));
+                let state = Arc::new(RwLock::new(self.default_state()));
                 rooms.insert(room.clone(), state.clone());
                 state
             }
@@ -62,7 +64,7 @@ impl SharedState {
     pub async fn create_room(&self, player_id: &PlayerId) -> room::RoomCode {
         let mut rooms = self.registry.write().await;
         let code = rooms.create_room(player_id);
-        let state = Arc::new(RwLock::new(State::default()));
+        let state = Arc::new(RwLock::new(self.default_state()));
 
         let mut inner = self.states.write().unwrap();
         inner.insert(code.clone(), state);
@@ -136,6 +138,23 @@ impl SharedState {
                     registry.remove_room(player_id);
                 }
             }
+        }
+    }
+
+    pub fn set_default_config(&self, config: config::RoomConfig) {
+        let mut default_config = self.default_config.write().unwrap();
+        *default_config = Some(config);
+    }
+
+    fn default_state(&self) -> State {
+        match self.default_config.read() {
+            Ok(config) => {
+                let config = config.as_ref().cloned().unwrap_or_default();
+                let mut state = State::default();
+                state.config = config;
+                state
+            }
+            Err(_) => State::default(),
         }
     }
 }
@@ -258,7 +277,7 @@ pub mod room {
 
 pub const STARTING_BALANCE: u64 = 1000;
 pub const SMALL_BLIND: u64 = 10;
-pub const BIG_BLIND: u64 = 20;
+pub const BIG_BLIND: u64 = SMALL_BLIND * 2;
 pub const PLAYER_EMOJI_TIMEOUT_SECONDS: u64 = 5;
 pub const TICKER_ITEM_TIMEOUT_SECONDS: u64 = 10;
 pub const TICKER_ITEM_GAP_MILLISECONDS: u64 = 500;
@@ -274,6 +293,7 @@ pub struct State {
     pub last_update: dt::SignalInstant,
     pub ticker: ticker::Ticker,
     pub status: GameStatus,
+    pub config: config::RoomConfig,
     pub disposed: bool,
 }
 
@@ -552,6 +572,7 @@ pub mod ticker {
     use crate::cards;
 
     use super::{dt::Instant, BetAction, PlayerId};
+    static TICKER_DISABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
     #[derive(Debug, Clone)]
     pub enum TickerEvent {
@@ -781,6 +802,10 @@ pub mod ticker {
         }
     }
 
+    pub(crate) fn is_disabled() -> bool {
+        *TICKER_DISABLED.get_or_init(|| std::env::var("DISABLE_TICKER").is_ok())
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -912,6 +937,81 @@ mod players {
 
         pub fn len(&self) -> usize {
             self.0.len()
+        }
+    }
+}
+
+pub mod config {
+    use super::*;
+
+    #[derive(Debug, Clone)]
+    pub struct RoomConfig {
+        small_blind: u64,
+        max_players: usize,
+        starting_balance: u64,
+        ticker_disabled: bool,
+    }
+
+    impl RoomConfig {
+        pub fn small_blind(&self) -> u64 {
+            self.small_blind
+        }
+
+        pub fn big_blind(&self) -> u64 {
+            self.small_blind * 2
+        }
+
+        pub fn with_small_blind(mut self, small_blind: u64) -> Self {
+            assert!(small_blind > 0);
+            assert!(small_blind < self.starting_balance);
+            self.small_blind = small_blind;
+            self
+        }
+
+        pub fn max_players(&self) -> usize {
+            self.max_players
+        }
+
+        pub fn with_max_players(mut self, max_players: usize) -> Self {
+            assert!(max_players > 0);
+            self.max_players = max_players.min(MAX_PLAYERS);
+            self
+        }
+
+        pub fn starting_balance(&self) -> u64 {
+            self.starting_balance
+        }
+
+        pub fn with_starting_balance(mut self, starting_balance: u64) -> Self {
+            assert!(starting_balance > 0);
+            assert!(starting_balance > self.small_blind);
+            self.starting_balance = starting_balance;
+            self
+        }
+
+        pub fn ticker_disabled(&self) -> bool {
+            self.ticker_disabled
+        }
+
+        pub fn with_ticker_enabled(mut self) -> Self {
+            self.ticker_disabled = false;
+            self
+        }
+
+        pub fn with_ticker_disabled(mut self) -> Self {
+            self.ticker_disabled = true;
+            self
+        }
+    }
+
+    impl Default for RoomConfig {
+        fn default() -> Self {
+            Self {
+                small_blind: SMALL_BLIND,
+                max_players: MAX_PLAYERS,
+                starting_balance: STARTING_BALANCE,
+                ticker_disabled: ticker::is_disabled(),
+            }
         }
     }
 }
