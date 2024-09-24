@@ -71,19 +71,25 @@ pub(crate) async fn room(
 ) -> JsonResult<models::GameClientRoom> {
     static EMPTY: OnceLock<state::RoomState> = OnceLock::new();
 
-    let room_code: Option<String> = room_code.map(|TypedHeader(room_code)| room_code.into());
-    let room_code = room_code.filter(|s: &String| !s.is_empty());
-    let room_code = match utils::wait_by_room_code(&state, query, room_code.as_deref()).await {
+    let room_code = match utils::wait_by_room_code(&state, query, room_code).await {
         Ok(room_code) => Some(room_code),
         Err(StatusCode::NOT_FOUND) => None,
         Err(status) => return Err(status),
     };
     let state = match &room_code {
-        Some(room_code) => state.get_room(&room_code).await,
-        None => None,
+        Some(room_code) => state
+            .get_room(&room_code)
+            .await
+            .ok_or(StatusCode::NOT_FOUND)?,
+        None => EMPTY
+            .get_or_init(|| {
+                let mut state = state::State::default();
+                state.status = state::GameStatus::Idle;
+                state.into()
+            })
+            .clone(),
     };
 
-    let state = state.unwrap_or_else(|| EMPTY.get_or_init(|| state::RoomState::default()).clone());
     let state = state.read().await;
 
     let game_client_state = models::GameClientRoom {
@@ -519,6 +525,7 @@ pub(crate) async fn reset_room(
 
 mod utils {
     use axum::http::StatusCode;
+    use axum_extra::TypedHeader;
     use tracing::info;
 
     use crate::{models, state};
@@ -556,8 +563,10 @@ mod utils {
     pub async fn wait_by_room_code(
         state: &state::SharedState,
         query: models::PollQuery,
-        room_code: Option<&str>,
+        room_code: Option<TypedHeader<models::headers::RoomCodeHeader>>,
     ) -> Result<state::room::RoomCode, StatusCode> {
+        let room_code: Option<String> = room_code.map(|TypedHeader(room_code)| room_code.into());
+        let room_code = room_code.filter(|s: &String| !s.is_empty());
         let room_code = match room_code {
             Some(room_code) => {
                 let room_code: state::room::RoomCode = room_code.parse().map_err(|_| {

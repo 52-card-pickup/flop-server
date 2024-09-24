@@ -287,6 +287,12 @@ pub struct Round {
     pub completed: Option<CompletedRound>,
 }
 
+impl Into<RoomState> for State {
+    fn into(self) -> RoomState {
+        Arc::new(RwLock::new(self))
+    }
+}
+
 #[derive(Clone)]
 pub struct PlayerPhoto(pub Arc<Bytes>, pub token::Token);
 
@@ -330,6 +336,7 @@ pub enum GameStatus {
     Joining,
     Playing,
     Complete,
+    Idle,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

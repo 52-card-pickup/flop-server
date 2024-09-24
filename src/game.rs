@@ -28,7 +28,7 @@ pub(crate) fn spawn_game_worker(state: state::SharedState) {
         let idle_ms = match status {
             state::GameStatus::Joining => Some(state::GAME_IDLE_TIMEOUT_SECONDS * 1000),
             state::GameStatus::Complete => Some(state::GAME_IDLE_TIMEOUT_SECONDS * 1000 * 4),
-            state::GameStatus::Playing => None,
+            state::GameStatus::Playing | state::GameStatus::Idle => None,
         };
 
         if idle_ms.map_or(false, |idle_ms| now_ms - last_update > idle_ms) {
@@ -136,7 +136,7 @@ pub(crate) fn add_new_player(
     if state.players.len() >= state::MAX_PLAYERS {
         return Err("Room is full".to_string());
     }
-    
+
     let player_name = player_name.replace(char::is_whitespace, " ");
     let player_name = player_name.trim().to_owned();
     if player_name.is_empty() {
@@ -766,6 +766,7 @@ pub(crate) fn game_phase(state: &state::State) -> models::GamePhase {
         state::GameStatus::Joining => models::GamePhase::Waiting,
         state::GameStatus::Playing => models::GamePhase::Playing,
         state::GameStatus::Complete => models::GamePhase::Complete,
+        state::GameStatus::Idle => models::GamePhase::Idle,
     }
 }
 
