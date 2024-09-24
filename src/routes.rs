@@ -441,7 +441,8 @@ pub(crate) async fn resume(
         None => None,
     };
 
-    let room_state = match req_room_code {
+    let shared_state = state.clone();
+    let room_state = match &req_room_code {
         Some(room_code) => state.get_room(&room_code).await,
         None => state.get_default_room().await,
     };
@@ -450,17 +451,24 @@ pub(crate) async fn resume(
 
     let mut state = room_state.write().await;
 
-    let player = state
-        .players
-        .promote_dormant(&apid)
-        .or_else(|| state.players.get_non_dormant(&apid).cloned())
-        .ok_or_else(|| StatusCode::NOT_FOUND)?;
+    let player = {
+        match state.players.promote_dormant(&apid) {
+            Some(player) => {
+                _ = shared_state
+                    .join_room(&player.id, req_room_code.as_ref())
+                    .await;
+                Some(player)
+            }
+            None => state.players.get_non_dormant(&apid).cloned(),
+        }
+    }
+    .ok_or_else(|| StatusCode::NOT_FOUND)?;
 
     state
         .ticker
-        .emit(state::TickerEvent::PlayerResumed(player.id));
-    state.last_update.set_now();
+        .emit(state::TickerEvent::PlayerResumed(player.id.clone()));
 
+    state.last_update.set_now();
     info!("Player {} resumed", player.id);
 
     Ok(Json(models::ResumeResponse {

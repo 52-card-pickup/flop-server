@@ -10,8 +10,8 @@ use crate::{
 
 use tracing::info;
 
-pub fn spawn_game_worker(state: state::SharedState) -> tokio::task::JoinHandle<()> {
-    async fn run_tasks(state: &state::RoomState) {
+pub fn spawn_game_worker(shared_state: state::SharedState) -> tokio::task::JoinHandle<()> {
+    async fn run_tasks(state: &state::RoomState, shared_state: &state::SharedState) {
         let now = state::dt::Instant::default();
 
         let shared_state = state;
@@ -80,6 +80,7 @@ pub fn spawn_game_worker(state: state::SharedState) -> tokio::task::JoinHandle<(
 
                 // TODO: notify player, soft kick
                 if let Some(player) = state.players.remove(&player.id) {
+                    shared_state.remove(&player.id).await;
                     info!("Player {} removed from game", player.id);
                     state
                         .ticker
@@ -107,10 +108,10 @@ pub fn spawn_game_worker(state: state::SharedState) -> tokio::task::JoinHandle<(
         loop {
             tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
-            state.cleanup().await;
+            shared_state.cleanup().await;
 
-            for state in state.iter().await {
-                run_tasks(&state).await;
+            for state in shared_state.iter().await {
+                run_tasks(&state, &shared_state).await;
             }
         }
     })
