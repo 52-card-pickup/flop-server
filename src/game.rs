@@ -175,6 +175,7 @@ pub(crate) fn add_new_player(
         folded: false,
         photo: None,
         ttl: None,
+        apid: uuid::Uuid::new_v4().to_string(),
         cards: (card_1, card_2),
     };
     state.players.insert(player_id.clone(), player);
@@ -182,6 +183,40 @@ pub(crate) fn add_new_player(
         .ticker
         .emit(TickerEvent::PlayerJoined(player_id.clone()));
     Ok(player_id)
+}
+
+pub(crate) fn set_player_apid(state: &mut state::State, player_id: &state::PlayerId, apid: &str) {
+    if let Some(player) = state.players.get_mut(player_id) {
+        player.apid = apid.to_string();
+    }
+}
+
+pub(crate) fn remove_player(
+    state: &mut state::State,
+    player_id: &state::PlayerId,
+) -> Result<(), String> {
+    let player = state
+        .players
+        .get(player_id)
+        .ok_or("Player not found".to_string())?;
+
+    if state.round.players_turn.as_ref() == Some(&player.id) {
+        info!(
+            "Player {} left while it was their turn, folding first...",
+            player.id
+        );
+        fold_player(state, player_id)?;
+    }
+
+    if let Some(player) = state.players.remove(player_id) {
+        info!("Player {} has been removed", player.id);
+        state
+            .ticker
+            .emit(TickerEvent::PlayerLeft(player.name.clone()));
+        Ok(())
+    } else {
+        Err("Player not found".to_string())
+    }
 }
 
 pub(crate) fn accept_player_bet(
