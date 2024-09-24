@@ -40,6 +40,27 @@ async fn it_should_start_game_and_play_3p_until_end() {
     handle.abort().await;
 }
 
+#[tokio::test]
+async fn it_should_remove_player_from_game() {
+    let (server, handle) = server::new_mock_app_server();
+
+    let mut game = fixtures::start_full_game(&server, 3).await;
+    fixtures::play_rounds_until_winner(&server, &game).await;
+
+    client::leave_room(&server, &game.player_ids[0]).await;
+
+    let leaving_player_id = game.player_ids.remove(0);
+    client::requests::get_little_screen(&server, &leaving_player_id)
+        .expect_failure()
+        .await
+        .assert_status_not_found();
+
+    client::start_game(&server, &game.room_code).await;
+    fixtures::play_rounds_until_winner(&server, &game).await;
+
+    handle.abort().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn it_should_start_game_and_play_3p_until_end_over_http() {
     let (server, handle) = server::new_http_app_server();
