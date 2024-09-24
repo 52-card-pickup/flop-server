@@ -71,30 +71,7 @@ pub fn spawn_game_worker(shared_state: state::SharedState) -> tokio::task::JoinH
                 info!("Player {} turn expired", player.id);
                 let mut state = state.write().await;
 
-                _ = fold_player(&mut state, &player.id).map_err(|e| {
-                    info!(
-                        "Player {} turn expired, but could not fold: {}",
-                        player.id, e
-                    )
-                });
-
-                // TODO: notify player, soft kick
-                if let Some(player) = state.players.remove(&player.id) {
-                    shared_state.remove(&player.id).await;
-                    info!("Player {} removed from game", player.id);
-                    state
-                        .ticker
-                        .emit(TickerEvent::PlayerTurnTimeout(player.name));
-                }
-                if state.players.len() < 2 {
-                    info!("Not enough players, pausing game until more players join");
-                    state.status = state::GameStatus::Joining;
-                    state.round = state::Round::default();
-                    for player in state.players.values_mut() {
-                        player.ttl = None;
-                    }
-                }
-                state.last_update.set_now();
+                timeout_player(&mut state, shared_state, &player.id).await;
             }
         }
 
@@ -192,6 +169,36 @@ pub(crate) fn set_player_apid(state: &mut state::State, player_id: &state::Playe
     }
 }
 
+async fn timeout_player(
+    state: &mut state::State,
+    shared_state: &state::SharedState,
+    player_id: &state::PlayerId,
+) {
+    _ = fold_player(state, &player_id).map_err(|e| {
+        info!(
+            "Player {} turn expired, but could not fold: {}",
+            player_id, e
+        )
+    });
+
+    // TODO: notify player, soft kick
+    if let Some(player) = state.players.remove(&player_id) {
+        shared_state.remove(&player_id).await;
+        info!("Player {} removed from game", player_id);
+        state
+            .ticker
+            .emit(TickerEvent::PlayerTurnTimeout(player.name));
+    }
+    if state.players.len() < 2 {
+        info!("Not enough players, pausing game until more players join");
+        state.status = state::GameStatus::Joining;
+        state.round = state::Round::default();
+        for player in state.players.values_mut() {
+            player.ttl = None;
+        }
+    }
+}
+
 pub(crate) fn remove_player(
     state: &mut state::State,
     player_id: &state::PlayerId,
@@ -209,15 +216,26 @@ pub(crate) fn remove_player(
         fold_player(state, player_id)?;
     }
 
-    if let Some(player) = state.players.remove(player_id) {
-        info!("Player {} has been removed", player.id);
-        state
-            .ticker
-            .emit(TickerEvent::PlayerLeft(player.name.clone()));
-        Ok(())
-    } else {
-        Err("Player not found".to_string())
+    match state.players.remove(player_id) {
+        Some(player) => {
+            info!("Player {} has been removed", player.id);
+            state
+                .ticker
+                .emit(TickerEvent::PlayerLeft(player.name.clone()));
+        }
+        None => Err("Player not found".to_string())?,
     }
+
+    if state.players.len() < 2 {
+        info!("Not enough players, pausing game until more players join");
+        state.status = state::GameStatus::Joining;
+        state.round = state::Round::default();
+        for player in state.players.values_mut() {
+            player.ttl = None;
+        }
+    }
+
+    Ok(())
 }
 
 pub(crate) fn accept_player_bet(
@@ -373,13 +391,14 @@ fn reset_players(state: &mut state::State) {
 }
 
 fn next_turn(state: &mut state::State, current_player_id: Option<&state::PlayerId>) {
+    if state.players.len() < 2 {
+        info!("Not enough players, pausing game");
+        state.round.players_turn = None;
+        return;
+    }
+
     let next_player_id = match current_player_id {
         Some(player_id) => get_next_players_turn(&state, player_id),
-        None if state.players.len() < 2 => {
-            info!("Not enough players, pausing game");
-            state.round.players_turn = None;
-            return;
-        }
         None if state.round.cards_on_table.is_empty() => {
             let mut player_ids = state
                 .players
