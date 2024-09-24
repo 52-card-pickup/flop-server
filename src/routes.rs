@@ -457,6 +457,13 @@ pub(crate) async fn resume(
                 _ = shared_state
                     .join_room(&player.id, req_room_code.as_ref())
                     .await;
+
+                state
+                    .players
+                    .get_mut(&player.id)
+                    .expect("player not found")
+                    .folded = true;
+
                 Some(player)
             }
             None => state.players.get_non_dormant(&apid).cloned(),
