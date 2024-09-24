@@ -1,7 +1,4 @@
-use std::{
-    collections::HashMap,
-    sync::{Arc, OnceLock},
-};
+use std::sync::{Arc, OnceLock};
 
 use crate::{
     game, models,
@@ -50,18 +47,7 @@ pub(crate) fn api_routes(state: state::SharedState) -> ApiRouter {
         .api_route("/new", post_with(new_room, docs::new_room))
         .api_route("/join", post_with(join, docs::join))
         .api_route("/play", post_with(play, docs::play))
-        .api_route("/dump", get_with(dump, docs::dump))
         .with_state(state)
-}
-
-pub(crate) async fn dump(State(state): State<SharedState>) -> JsonResult<HashMap<String, String>> {
-    let state: Vec<_> = state.iter_key_values().await.collect();
-    let mut map = HashMap::new();
-    for (room_code, room_state) in state {
-        let room_state = room_state.read().await;
-        map.insert(room_code.to_string(), format!("{:?}", &*room_state));
-    }
-    Ok(Json(map))
 }
 
 pub(crate) async fn room(
