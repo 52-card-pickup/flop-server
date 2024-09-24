@@ -1,4 +1,6 @@
 pub mod fixtures {
+    use std::collections::HashMap;
+
     use super::*;
     use axum_test::TestServer;
     use client::models::LittleScreen;
@@ -12,9 +14,14 @@ pub mod fixtures {
         let room_code = player1.room_code;
 
         // Other players join.
+        let mut player_apids = HashMap::new();
+        player_apids.insert(player1.player_id.clone(), player1.apid);
+
         let mut player_ids = vec![player1.player_id];
+
         for i in 2..=num_players {
             let player = client::join_room(server, &format!("player{}", i), &room_code).await;
+            player_apids.insert(player.player_id.clone(), player.apid);
             player_ids.push(player.player_id);
         }
 
@@ -23,6 +30,7 @@ pub mod fixtures {
         StartedGame {
             room_code,
             player_ids,
+            player_apids,
         }
     }
 
@@ -86,9 +94,12 @@ pub mod fixtures {
     }
 
     mod state {
+        use std::collections::HashMap;
+
         pub struct StartedGame {
             pub room_code: String,
             pub player_ids: Vec<String>,
+            pub player_apids: HashMap<String, String>,
         }
     }
 }
@@ -209,13 +220,16 @@ pub mod client {
             .json(&json!({
                 "name": player_name,
             }))
-            .await
-            .json::<Json>();
+            .await;
+
+        let apid = response.cookie("apid").value().to_string();
+        let response = response.json::<Json>();
 
         CreatedRoom {
             raw: response.clone(),
             room_code: response["roomCode"].as_str().unwrap().to_string(),
             player_id: response["id"].as_str().unwrap().to_string(),
+            apid,
         }
     }
 
@@ -225,10 +239,31 @@ pub mod client {
                 "name": player_name,
                 "roomCode": room_code,
             }))
+            .await;
+
+        let apid = response.cookie("apid").value().to_string();
+        let response = response.json::<Json>();
+
+        JoinedRoom {
+            raw: response.clone(),
+            player_id: response["id"].as_str().unwrap().to_string(),
+            apid,
+        }
+    }
+
+    pub async fn resume_session(
+        server: &TestServer,
+        apid: &str,
+        room_code: &str,
+    ) -> ResumedSession {
+        let response = requests::resume_session(server, apid)
+            .json(&json!({
+                "roomCode": room_code,
+            }))
             .await
             .json::<Json>();
 
-        JoinedRoom {
+        ResumedSession {
             raw: response.clone(),
             player_id: response["id"].as_str().unwrap().to_string(),
         }
@@ -285,6 +320,11 @@ pub mod client {
         pub fn join_room(server: &TestServer) -> TestRequest {
             server.post("/api/v1/join")
         }
+        pub fn resume_session(server: &TestServer, apid: &str) -> TestRequest {
+            server
+                .post("/api/v1/resume")
+                .add_cookie(("apid", apid).into())
+        }
         pub fn start_game(server: &TestServer) -> TestRequest {
             server.post("/api/v1/room/close")
         }
@@ -314,8 +354,14 @@ pub mod client {
             pub raw: Value,
             pub room_code: String,
             pub player_id: String,
+            pub apid: String,
         }
         pub struct JoinedRoom {
+            pub raw: Value,
+            pub player_id: String,
+            pub apid: String,
+        }
+        pub struct ResumedSession {
             pub raw: Value,
             pub player_id: String,
         }
