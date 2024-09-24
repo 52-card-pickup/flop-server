@@ -221,6 +221,7 @@ pub(crate) async fn get_player_photo(
     State(state): State<SharedState>,
     Path(token): Path<String>,
 ) -> Result<(header::HeaderMap, body::Bytes), StatusCode> {
+    // TODO: accept room code to prevent scanning all rooms
     let state = {
         let mut matched = None;
         for room_state in state.iter().await {
@@ -447,16 +448,7 @@ pub(crate) async fn peek_room(
     State(state): State<SharedState>,
     Json(payload): Json<models::PeekRoomRequest>,
 ) -> JsonResult<models::PeekRoomResponse> {
-    let room_code = payload
-        .room_code
-        .parse()
-        .map_err(|_| StatusCode::BAD_REQUEST)?;
-
-    let state = state
-        .get_room(&room_code)
-        .await
-        .ok_or(StatusCode::NOT_FOUND)?;
-
+    let state = utils::extract_room_state(&state, Some(payload.room_code)).await?;
     let state = state.read().await;
 
     let peek = models::PeekRoomResponse {
@@ -471,18 +463,8 @@ pub(crate) async fn close_room(
     State(state): State<SharedState>,
     json: Option<Json<models::CloseRoomRequest>>,
 ) -> JsonResult<()> {
-    let room_code = json
-        .and_then(|Json(payload)| payload.room_code)
-        .map(|s| s.parse())
-        .transpose()
-        .map_err(|_| StatusCode::BAD_REQUEST)?;
-
-    let state = match room_code {
-        Some(room_code) => state.get_room(&room_code).await,
-        None => state.get_default_room().await,
-    };
-
-    let state = state.ok_or(StatusCode::NOT_FOUND)?;
+    let room_code = json.and_then(|Json(payload)| payload.room_code);
+    let state = utils::extract_room_state(&state, room_code).await?;
     let mut state = state.write().await;
 
     game::start_game(&mut state).map_err(|err| {
@@ -500,19 +482,8 @@ pub(crate) async fn reset_room(
     State(state): State<SharedState>,
     room_code: Option<TypedHeader<models::headers::RoomCodeHeader>>,
 ) -> JsonResult<()> {
-    let room_code: Option<state::room::RoomCode> = room_code
-        .map(|TypedHeader(room_code)| room_code.into())
-        .filter(|s: &String| !s.is_empty())
-        .map(|s| s.parse())
-        .transpose()
-        .map_err(|_| StatusCode::BAD_REQUEST)?;
-
-    let state = match room_code {
-        Some(room_code) => state.get_room(&room_code).await,
-        None => state.get_default_room().await,
-    };
-
-    let state = state.ok_or(StatusCode::NOT_FOUND)?;
+    let room_code = room_code.map(|TypedHeader(room_code)| room_code.into());
+    let state = utils::extract_room_state(&state, room_code).await?;
     let mut state = state.write().await;
 
     *state = state::State::default();
@@ -546,6 +517,23 @@ mod utils {
             Some(player) => Ok(player.clone()),
             None => Err(StatusCode::NOT_FOUND),
         }
+    }
+
+    pub async fn extract_room_state(
+        state: &state::SharedState,
+        room_code: Option<String>,
+    ) -> Result<state::RoomState, StatusCode> {
+        let room_code = room_code
+            .map(|s| s.parse())
+            .transpose()
+            .map_err(|_| StatusCode::BAD_REQUEST)?;
+        let state = match &room_code {
+            Some(room_code) => state.get_room(&room_code).await,
+            None => state.get_default_room().await,
+        };
+
+        let state = state.ok_or(StatusCode::NOT_FOUND)?;
+        Ok(state)
     }
 
     pub async fn wait_by_player_id(
@@ -595,7 +583,7 @@ mod utils {
         Ok(room_code)
     }
 
-    pub async fn wait_for_update(state: &state::RoomState, query: models::PollQuery) {
+    async fn wait_for_update(state: &state::RoomState, query: models::PollQuery) {
         if let Some(last_update) = query.since {
             let rx = {
                 let state = state.read().await;
