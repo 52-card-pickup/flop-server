@@ -350,7 +350,7 @@ impl PartialOrd for EvaluatedHand {
 
 #[cfg(test)]
 mod tests {
-    use crate::cards::tests::helpers::{cards_1p, cards_2p};
+    use helpers::{cards_1p, cards_2p};
 
     use super::*;
 

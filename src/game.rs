@@ -14,22 +14,41 @@ pub(crate) fn spawn_game_worker(state: state::SharedState) {
     async fn run_tasks(state: &state::RoomState) {
         let now = state::dt::Instant::default();
 
-        let (last_update, current_player, status, ticker_expired) = {
-            let state = state.read().await;
-            let last_update = state.last_update.as_u64();
-            let players_turn = state.round.players_turn.clone();
-            let current_player = players_turn.and_then(|id| state.players.get(&id)).cloned();
-            let ticker_expired = state.ticker.has_expired_items(now);
-
-            (last_update, current_player, state.status, ticker_expired)
-        };
+        let shared_state = state;
+        let state = shared_state.read().await;
+        let status = state.status.clone();
+        let last_update = state.last_update.as_u64();
+        let players_turn = state.round.players_turn.clone();
+        let current_player = players_turn.and_then(|id| state.players.get(&id)).cloned();
+        let ticker_expired = state.ticker.has_expired_items(now);
+        let players = state.players.iter();
+        let expired_emoji_players = players
+            .filter(|(_, p)| {
+                p.emoji.map_or(false, |(_, start)| {
+                    start.as_u64() + state::PLAYER_EMOJI_TIMEOUT_SECONDS * 1000 < now.as_u64()
+                })
+            })
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+        drop(state);
 
         let now_ms: u64 = now.into();
+        let state = shared_state;
         let idle_ms = match status {
             state::GameStatus::Joining => Some(state::GAME_IDLE_TIMEOUT_SECONDS * 1000),
             state::GameStatus::Complete => Some(state::GAME_IDLE_TIMEOUT_SECONDS * 1000 * 4),
             state::GameStatus::Playing | state::GameStatus::Idle => None,
         };
+
+        if !expired_emoji_players.is_empty() {
+            let mut state = state.write().await;
+            for player_id in expired_emoji_players {
+                if let Some(player) = state.players.get_mut(&player_id) {
+                    player.emoji = None;
+                }
+            }
+            state.last_update.set_now();
+        }
 
         if idle_ms.map_or(false, |idle_ms| now_ms - last_update > idle_ms) {
             if let Ok("true") = std::env::var("KILL_ON_IDLE").as_deref() {
@@ -149,6 +168,7 @@ pub(crate) fn add_new_player(
     let player = state::Player {
         name: player_name,
         id: player_id.clone(),
+        emoji: None,
         funds_token,
         balance: state::STARTING_BALANCE,
         stake: 0,
@@ -867,6 +887,7 @@ pub(crate) fn room_players(state: &state::State) -> Vec<models::GameClientPlayer
             name: p.name.clone(),
             balance: p.balance,
             folded: p.folded,
+            emoji: p.emoji.as_ref().map(|(e, _)| e.to_string()),
             photo: player_photo_url(p),
             color_hue: player_color_hue(p),
             turn_expires_dt: p.ttl.map(|dt| dt.into()).filter(|_| {

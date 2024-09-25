@@ -148,6 +148,8 @@ pub(crate) async fn player_send(
             return Err(StatusCode::BAD_REQUEST);
         }
     };
+    state.players.get_mut(&player.id).unwrap().emoji =
+        Some((emoji.clone(), state::dt::Instant::default()));
     state
         .ticker
         .emit(state::TickerEvent::PlayerSentEmoji(player.id, emoji));

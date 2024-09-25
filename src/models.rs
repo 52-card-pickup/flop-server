@@ -139,6 +139,7 @@ pub(crate) struct GameClientPlayer {
     pub(crate) name: String,
     pub(crate) balance: u64,
     pub(crate) folded: bool,
+    pub(crate) emoji: Option<String>,
     pub(crate) photo: Option<String>,
     pub(crate) color_hue: u16,
     pub(crate) turn_expires_dt: Option<u64>,

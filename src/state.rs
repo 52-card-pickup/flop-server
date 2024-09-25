@@ -259,6 +259,7 @@ pub mod room {
 pub const STARTING_BALANCE: u64 = 1000;
 pub const SMALL_BLIND: u64 = 10;
 pub const BIG_BLIND: u64 = 20;
+pub const PLAYER_EMOJI_TIMEOUT_SECONDS: u64 = 5;
 pub const TICKER_ITEM_TIMEOUT_SECONDS: u64 = 10;
 pub const TICKER_ITEM_GAP_MILLISECONDS: u64 = 500;
 pub const PLAYER_TURN_TIMEOUT_SECONDS: u64 = 60;
@@ -306,6 +307,7 @@ impl std::fmt::Debug for PlayerPhoto {
 pub struct Player {
     pub name: String,
     pub id: PlayerId,
+    pub emoji: Option<(ticker::emoji::TickerEmoji, dt::Instant)>,
     pub funds_token: token::Token,
     pub balance: u64,
     pub stake: u64,
