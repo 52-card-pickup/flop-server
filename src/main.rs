@@ -5,7 +5,6 @@ use std::{
 
 use aide::{axum::ApiRouter, openapi::OpenApi, transform::TransformOpenApi};
 use axum::Extension;
-use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
 use tracing::info;
 
@@ -29,8 +28,7 @@ async fn main() {
     let mut api = OpenApi::default();
 
     // initialize state
-    let state = state::State::default();
-    let state: state::SharedState = Arc::new(RwLock::new(state));
+    let state = state::SharedState::default();
     game::spawn_game_worker(state.clone());
 
     // build our application with a route

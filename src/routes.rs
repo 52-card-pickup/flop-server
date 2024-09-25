@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use crate::{
     game, models,
@@ -15,6 +15,7 @@ use axum::{
     http::{header, HeaderValue, StatusCode},
     Json,
 };
+use axum_extra::TypedHeader;
 use tracing::info;
 
 type JsonResult<T> = Result<Json<T>, StatusCode>;
@@ -22,6 +23,7 @@ type JsonResult<T> = Result<Json<T>, StatusCode>;
 pub(crate) fn api_routes(state: state::SharedState) -> ApiRouter {
     ApiRouter::new()
         .api_route("/room", get_with(room, docs::room))
+        .api_route("/room/peek", post_with(peek_room, docs::peek_room))
         .api_route("/room/close", post_with(close_room, docs::close_room))
         .api_route("/room/reset", post_with(reset_room, docs::reset_room))
         .api_route("/player/:player_id", get_with(player, docs::player))
@@ -42,6 +44,7 @@ pub(crate) fn api_routes(state: state::SharedState) -> ApiRouter {
             "/player/photo/:token",
             get_with(get_player_photo, docs::get_player_photo),
         )
+        .api_route("/new", post_with(new_room, docs::new_room))
         .api_route("/join", post_with(join, docs::join))
         .api_route("/play", post_with(play, docs::play))
         .with_state(state)
@@ -50,8 +53,28 @@ pub(crate) fn api_routes(state: state::SharedState) -> ApiRouter {
 pub(crate) async fn room(
     State(state): State<SharedState>,
     Query(query): Query<models::PollQuery>,
-) -> Json<models::GameClientRoom> {
-    utils::wait_for_update(&state, query).await;
+    room_code: Option<TypedHeader<models::headers::RoomCodeHeader>>,
+) -> JsonResult<models::GameClientRoom> {
+    static EMPTY: OnceLock<state::RoomState> = OnceLock::new();
+
+    let room_code = match utils::wait_by_room_code(&state, query, room_code).await {
+        Ok(room_code) => Some(room_code),
+        Err(StatusCode::NOT_FOUND) => None,
+        Err(status) => return Err(status),
+    };
+    let state = match &room_code {
+        Some(room_code) => state
+            .get_room(&room_code)
+            .await
+            .ok_or(StatusCode::NOT_FOUND)?,
+        None => EMPTY
+            .get_or_init(|| {
+                let mut state = state::State::default();
+                state.status = state::GameStatus::Idle;
+                state.into()
+            })
+            .clone(),
+    };
 
     let state = state.read().await;
 
@@ -62,10 +85,11 @@ pub(crate) async fn room(
         cards: game::cards_on_table(&state),
         completed: game::completed_game(&state),
         ticker: game::ticker(&state),
+        room_code: room_code.map(|r| r.to_string()),
         last_update: state.last_update.as_u64(),
     };
 
-    Json(game_client_state)
+    Ok(Json(game_client_state))
 }
 
 pub(crate) async fn player(
@@ -73,10 +97,10 @@ pub(crate) async fn player(
     Path(player_id): Path<String>,
     Query(query): Query<models::PollQuery>,
 ) -> JsonResult<models::GamePlayerState> {
-    utils::wait_for_update(&state, query).await;
+    let player = utils::wait_by_player_id(&state, query, &player_id).await?;
 
+    let state = state.get(&player.id).await.ok_or(StatusCode::NOT_FOUND)?;
     let state = state.read().await;
-    let player = utils::validate_player(&player_id, &state)?;
 
     let game_player_state = models::GamePlayerState {
         state: game::game_phase(&state),
@@ -85,6 +109,7 @@ pub(crate) async fn player(
         your_turn: game::is_player_turn(&state, &player.id),
         call_amount: game::call_amount(&state).unwrap_or(0),
         min_raise_to: game::min_raise_to(&state),
+        players_count: state.players.len(),
         turn_expires_dt: game::turn_expires_dt(&state, &player.id),
         last_update: state.last_update.as_u64(),
         current_round_stake: game::player_stake_in_round(&state, &player.id),
@@ -98,8 +123,9 @@ pub(crate) async fn player_send(
     Path(player_id): Path<String>,
     Json(payload): Json<models::PlayerSendRequest>,
 ) -> JsonResult<()> {
+    let player = utils::validate_player(&player_id, &state).await?;
+    let state = state.get(&player.id).await.ok_or(StatusCode::NOT_FOUND)?;
     let mut state = state.write().await;
-    let player = utils::validate_player(&player_id, &state)?;
 
     if payload.message.is_empty() {
         info!(
@@ -137,8 +163,9 @@ pub(crate) async fn get_player_transfer(
     State(state): State<SharedState>,
     Path(player_id): Path<String>,
 ) -> JsonResult<models::PlayerAccountsResponse> {
+    let player = utils::validate_player(&player_id, &state).await?;
+    let state = state.get(&player.id).await.ok_or(StatusCode::NOT_FOUND)?;
     let state = state.read().await;
-    let player = utils::validate_player(&player_id, &state)?;
 
     let accounts = state
         .players
@@ -158,8 +185,9 @@ pub(crate) async fn post_player_transfer(
     Path(player_id): Path<String>,
     Json(payload): Json<models::TransferRequest>,
 ) -> JsonResult<()> {
+    let player = utils::validate_player(&player_id, &state).await?;
+    let state = state.get(&player.id).await.ok_or(StatusCode::NOT_FOUND)?;
     let mut state = state.write().await;
-    let player = utils::validate_player(&player_id, &state)?;
 
     if payload.amount == 0 {
         info!("Player {} failed to transfer: amount is zero", player_id);
@@ -181,11 +209,36 @@ pub(crate) async fn get_player_photo(
     State(state): State<SharedState>,
     Path(token): Path<String>,
 ) -> Result<(header::HeaderMap, body::Bytes), StatusCode> {
+    // TODO: accept room code to prevent scanning all rooms
+    let state = {
+        let mut matched = None;
+        for room_state in state.iter().await {
+            let state = room_state.read().await;
+            if state.players.values().any(|p| {
+                p.photo
+                    .as_ref()
+                    .map(|state::PlayerPhoto(_, t)| t.to_string())
+                    .as_deref()
+                    == Some(token.as_str())
+            }) {
+                drop(state);
+                matched = Some(room_state);
+                break;
+            }
+        }
+        matched.ok_or(StatusCode::NOT_FOUND)?
+    };
+
     let state = state.read().await;
     let photo = state
         .players
         .values()
-        .find(|p| p.photo.as_ref().map(|(_, token)| token.as_ref()) == Some(token.as_str()))
+        .find(|p| {
+            p.photo
+                .as_ref()
+                .map(|state::PlayerPhoto(_, token)| token.as_ref())
+                == Some(token.as_str())
+        })
         .and_then(|p| p.photo.as_ref())
         .ok_or(StatusCode::NOT_FOUND)?;
 
@@ -213,10 +266,9 @@ pub(crate) async fn post_player_photo(
     Path(player_id): Path<String>,
     mut multipart: Multipart,
 ) -> JsonResult<()> {
-    let player_id = {
-        let state = state.read().await;
-        utils::validate_player(&player_id, &state)?.id
-    };
+    let player = utils::validate_player(&player_id, &state).await?;
+    let state = state.get(&player.id).await.ok_or(StatusCode::NOT_FOUND)?;
+    let player_id = player.id;
 
     let field = multipart
         .next_field()
@@ -242,7 +294,7 @@ pub(crate) async fn post_player_photo(
         .ok_or(StatusCode::NOT_FOUND)?;
 
     let guid = state::token::Token::default();
-    player.photo = Some((Arc::new(data), guid));
+    player.photo = Some(state::PlayerPhoto(Arc::new(data), guid));
     state
         .ticker
         .emit(state::TickerEvent::PlayerPhotoUploaded(player_id.clone()));
@@ -259,8 +311,9 @@ pub(crate) async fn play(
     State(state): State<SharedState>,
     Json(payload): Json<models::PlayRequest>,
 ) -> JsonResult<()> {
+    let player = utils::validate_player(&payload.player_id, &state).await?;
+    let state = state.get(&player.id).await.ok_or(StatusCode::NOT_FOUND)?;
     let mut state = state.write().await;
-    let player = utils::validate_player(&payload.player_id, &state)?;
     if let Err(err) = game::reset_ttl(&mut state, &player.id) {
         info!("Player {} failed to play: {}", payload.player_id, err);
         return Err(StatusCode::BAD_REQUEST);
@@ -306,10 +359,30 @@ pub(crate) async fn join(
         return Err(StatusCode::BAD_REQUEST);
     }
 
+    let req_room_code: Option<state::room::RoomCode> = match payload.room_code {
+        Some(room_code) => Some(room_code.parse().map_err(|_| StatusCode::BAD_REQUEST)?),
+        None => None,
+    };
+    let player_id = state::PlayerId::default();
+    info!("Player {} joining room = {:?}", player_id, req_room_code);
+    let room_code = state
+        .join_room(&player_id, req_room_code.as_ref())
+        .await
+        .map_err(|_| {
+            info!(
+                "Player failed to join room: room code = {:?}, player id = {}",
+                req_room_code, player_id
+            );
+            StatusCode::BAD_REQUEST
+        })?;
+    info!("Player {} joined room = {:?}", player_id, room_code);
+    let state = state
+        .get_room(&room_code)
+        .await
+        .ok_or(StatusCode::NOT_FOUND)?;
     let mut state = state.write().await;
-    let name = payload.name.replace(char::is_whitespace, " ");
 
-    let id = match game::add_new_player(&mut state, name.trim()) {
+    let id = match game::add_new_player(&mut state, &payload.name, player_id) {
         Ok(id) => id,
         Err(err) => {
             info!("Player failed to join: {}", err);
@@ -320,10 +393,66 @@ pub(crate) async fn join(
     state.last_update.set_now();
 
     info!("Player {} joined", id);
-    Ok(Json(models::JoinResponse { id: id.to_string() }))
+    Ok(Json(models::JoinResponse {
+        id: id.to_string(),
+        room_code: room_code.to_string(),
+    }))
 }
 
-pub(crate) async fn close_room(State(state): State<SharedState>) -> JsonResult<()> {
+pub(crate) async fn new_room(
+    State(state): State<SharedState>,
+    Json(payload): Json<models::NewRoomRequest>,
+) -> JsonResult<models::NewRoomResponse> {
+    let player_id = state::PlayerId::default();
+    info!("Creating new room for player {}", player_id);
+
+    let room_code = state.create_room(&player_id).await;
+    info!("New room created for player {}: {:?}", player_id, room_code);
+
+    let state = state
+        .get_room(&room_code)
+        .await
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let mut state = state.write().await;
+
+    let id = match game::add_new_player(&mut state, &payload.name, player_id) {
+        Ok(id) => id,
+        Err(err) => {
+            info!("Player failed to join: {}", err);
+            return Err(StatusCode::BAD_REQUEST);
+        }
+    };
+
+    state.last_update.set_now();
+
+    info!("Player {} joined", id);
+    Ok(Json(models::NewRoomResponse {
+        id: id.to_string(),
+        room_code: room_code.to_string(),
+    }))
+}
+
+pub(crate) async fn peek_room(
+    State(state): State<SharedState>,
+    Json(payload): Json<models::PeekRoomRequest>,
+) -> JsonResult<models::PeekRoomResponse> {
+    let state = utils::query_room_state(&state, Some(payload.room_code)).await?;
+    let state = state.read().await;
+
+    let peek = models::PeekRoomResponse {
+        state: game::game_phase(&state),
+        players_count: state.players.len(),
+    };
+
+    Ok(Json(peek))
+}
+
+pub(crate) async fn close_room(
+    State(state): State<SharedState>,
+    json: Option<Json<models::CloseRoomRequest>>,
+) -> JsonResult<()> {
+    let room_code = json.and_then(|Json(payload)| payload.room_code);
+    let state = utils::query_room_state(&state, room_code).await?;
     let mut state = state.write().await;
 
     game::start_game(&mut state).map_err(|err| {
@@ -337,7 +466,12 @@ pub(crate) async fn close_room(State(state): State<SharedState>) -> JsonResult<(
     Ok(Json(()))
 }
 
-pub(crate) async fn reset_room(State(state): State<SharedState>) -> Json<()> {
+pub(crate) async fn reset_room(
+    State(state): State<SharedState>,
+    room_code: Option<TypedHeader<models::headers::RoomCodeHeader>>,
+) -> JsonResult<()> {
+    let room_code = room_code.map(|TypedHeader(room_code)| room_code.into());
+    let state = utils::query_room_state(&state, room_code).await?;
     let mut state = state.write().await;
 
     *state = state::State::default();
@@ -345,26 +479,27 @@ pub(crate) async fn reset_room(State(state): State<SharedState>) -> Json<()> {
     state.last_update.set_now();
 
     info!("Game reset");
-    Json(())
+    Ok(Json(()))
 }
 
 mod utils {
     use axum::http::StatusCode;
+    use axum_extra::TypedHeader;
     use tracing::info;
 
-    use crate::{
-        models,
-        state::{self, SharedState},
-    };
+    use crate::{models, state};
 
-    pub fn validate_player(
+    pub async fn validate_player(
         player_id: &str,
-        state: &state::State,
+        state: &state::SharedState,
     ) -> Result<state::Player, StatusCode> {
         let player_id = player_id.parse().map_err(|_| {
             info!("Player {} failed: invalid player id", player_id);
             StatusCode::BAD_REQUEST
         })?;
+
+        let state = state.get(&player_id).await.ok_or(StatusCode::NOT_FOUND)?;
+        let state = state.read().await;
 
         match state.players.get(&player_id) {
             Some(player) => Ok(player.clone()),
@@ -372,7 +507,75 @@ mod utils {
         }
     }
 
-    pub async fn wait_for_update(state: &SharedState, query: models::PollQuery) {
+    pub async fn query_room_state(
+        state: &state::SharedState,
+        room_code: Option<String>,
+    ) -> Result<state::RoomState, StatusCode> {
+        let state = match room_code.filter(|s: &String| !s.is_empty()) {
+            Some(room_code) => {
+                let room_code = room_code.parse().map_err(|_| {
+                    info!(
+                        "Failed to wait for room update: invalid room code '{}'",
+                        room_code
+                    );
+                    StatusCode::BAD_REQUEST
+                })?;
+
+                state.get_room(&room_code).await
+            }
+            None => state.get_default_room().await,
+        };
+
+        state.ok_or(StatusCode::NOT_FOUND)
+    }
+
+    pub async fn wait_by_player_id(
+        state: &state::SharedState,
+        query: models::PollQuery,
+        player_id: &str,
+    ) -> Result<state::Player, StatusCode> {
+        let player = validate_player(player_id, state).await?;
+        let state = state.get(&player.id).await.ok_or(StatusCode::NOT_FOUND)?;
+        wait_for_update(&state, query).await;
+
+        Ok(player)
+    }
+
+    pub async fn wait_by_room_code(
+        state: &state::SharedState,
+        query: models::PollQuery,
+        room_code: Option<TypedHeader<models::headers::RoomCodeHeader>>,
+    ) -> Result<state::room::RoomCode, StatusCode> {
+        let room_code: Option<String> = room_code.map(|TypedHeader(room_code)| room_code.into());
+        let room_code = match room_code.filter(|s: &String| !s.is_empty()) {
+            Some(room_code) => {
+                let room_code: state::room::RoomCode = room_code.parse().map_err(|_| {
+                    info!(
+                        "Failed to wait for room update: invalid room code '{}'",
+                        room_code
+                    );
+                    StatusCode::BAD_REQUEST
+                })?;
+
+                room_code
+            }
+            None => state
+                .get_default_room_code()
+                .await
+                .ok_or(StatusCode::NOT_FOUND)?,
+        };
+
+        let state = state
+            .get_room(&room_code)
+            .await
+            .ok_or(StatusCode::NOT_FOUND)?;
+
+        wait_for_update(&state, query).await;
+
+        Ok(room_code)
+    }
+
+    async fn wait_for_update(state: &state::RoomState, query: models::PollQuery) {
         if let Some(last_update) = query.since {
             let rx = {
                 let state = state.read().await;
@@ -425,8 +628,16 @@ pub mod docs {
         op.description("Play a round.")
     }
 
+    pub fn new_room(op: TransformOperation) -> TransformOperation {
+        op.description("Create and join a new game room.")
+    }
+
     pub fn join(op: TransformOperation) -> TransformOperation {
         op.description("Join the game room.")
+    }
+
+    pub fn peek_room(op: TransformOperation) -> TransformOperation {
+        op.description("Peek at the game room from join code.")
     }
 
     pub fn close_room(op: TransformOperation) -> TransformOperation {
