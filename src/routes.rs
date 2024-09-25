@@ -434,7 +434,7 @@ pub(crate) async fn peek_room(
     State(state): State<SharedState>,
     Json(payload): Json<models::PeekRoomRequest>,
 ) -> JsonResult<models::PeekRoomResponse> {
-    let state = utils::extract_room_state(&state, Some(payload.room_code)).await?;
+    let state = utils::query_room_state(&state, Some(payload.room_code)).await?;
     let state = state.read().await;
 
     let peek = models::PeekRoomResponse {
@@ -450,7 +450,7 @@ pub(crate) async fn close_room(
     json: Option<Json<models::CloseRoomRequest>>,
 ) -> JsonResult<()> {
     let room_code = json.and_then(|Json(payload)| payload.room_code);
-    let state = utils::extract_room_state(&state, room_code).await?;
+    let state = utils::query_room_state(&state, room_code).await?;
     let mut state = state.write().await;
 
     game::start_game(&mut state).map_err(|err| {
@@ -469,7 +469,7 @@ pub(crate) async fn reset_room(
     room_code: Option<TypedHeader<models::headers::RoomCodeHeader>>,
 ) -> JsonResult<()> {
     let room_code = room_code.map(|TypedHeader(room_code)| room_code.into());
-    let state = utils::extract_room_state(&state, room_code).await?;
+    let state = utils::query_room_state(&state, room_code).await?;
     let mut state = state.write().await;
 
     *state = state::State::default();
@@ -505,21 +505,26 @@ mod utils {
         }
     }
 
-    pub async fn extract_room_state(
+    pub async fn query_room_state(
         state: &state::SharedState,
         room_code: Option<String>,
     ) -> Result<state::RoomState, StatusCode> {
-        let room_code = room_code
-            .map(|s| s.parse())
-            .transpose()
-            .map_err(|_| StatusCode::BAD_REQUEST)?;
-        let state = match &room_code {
-            Some(room_code) => state.get_room(&room_code).await,
+        let state = match room_code.filter(|s: &String| !s.is_empty()) {
+            Some(room_code) => {
+                let room_code = room_code.parse().map_err(|_| {
+                    info!(
+                        "Failed to wait for room update: invalid room code '{}'",
+                        room_code
+                    );
+                    StatusCode::BAD_REQUEST
+                })?;
+
+                state.get_room(&room_code).await
+            }
             None => state.get_default_room().await,
         };
 
-        let state = state.ok_or(StatusCode::NOT_FOUND)?;
-        Ok(state)
+        state.ok_or(StatusCode::NOT_FOUND)
     }
 
     pub async fn wait_by_player_id(
@@ -540,8 +545,7 @@ mod utils {
         room_code: Option<TypedHeader<models::headers::RoomCodeHeader>>,
     ) -> Result<state::room::RoomCode, StatusCode> {
         let room_code: Option<String> = room_code.map(|TypedHeader(room_code)| room_code.into());
-        let room_code = room_code.filter(|s: &String| !s.is_empty());
-        let room_code = match room_code {
+        let room_code = match room_code.filter(|s: &String| !s.is_empty()) {
             Some(room_code) => {
                 let room_code: state::room::RoomCode = room_code.parse().map_err(|_| {
                     info!(
