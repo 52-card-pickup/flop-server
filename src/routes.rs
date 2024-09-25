@@ -436,27 +436,19 @@ pub(crate) async fn resume(
 ) -> JsonResult<models::ResumeResponse> {
     info!("Resuming previous session for anonymous player id {}", apid);
 
-    let req_room_code: Option<state::room::RoomCode> = match payload.room_code {
-        Some(room_code) => Some(room_code.parse().map_err(|_| StatusCode::BAD_REQUEST)?),
-        None => None,
-    };
-
     let shared_state = state.clone();
-    let room_state = match &req_room_code {
-        Some(room_code) => state.get_room(&room_code).await,
-        None => state.get_default_room().await,
-    };
-
-    let room_state = room_state.ok_or(StatusCode::NOT_FOUND)?;
-
+    let room_state = utils::query_room_state(&state, payload.room_code.clone()).await?;
     let mut state = room_state.write().await;
 
     let player = {
         match state.players.promote_dormant(&apid) {
             Some(player) => {
-                _ = shared_state
-                    .join_room(&player.id, req_room_code.as_ref())
-                    .await;
+                let room_code = payload
+                    .room_code
+                    .as_ref()
+                    .and_then(|room_code| room_code.parse().ok());
+
+                _ = shared_state.join_room(&player.id, room_code.as_ref()).await;
 
                 state
                     .players
