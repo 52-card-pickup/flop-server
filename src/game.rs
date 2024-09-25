@@ -10,7 +10,7 @@ use crate::{
 
 use tracing::info;
 
-pub(crate) fn spawn_game_worker(state: state::SharedState) {
+pub fn spawn_game_worker(state: state::SharedState) -> tokio::task::JoinHandle<()> {
     async fn run_tasks(state: &state::RoomState) {
         let now = state::dt::Instant::default();
 
@@ -113,7 +113,7 @@ pub(crate) fn spawn_game_worker(state: state::SharedState) {
                 run_tasks(&state).await;
             }
         }
-    });
+    })
 }
 
 pub(crate) fn start_game(state: &mut state::State) -> Result<(), String> {
@@ -152,7 +152,7 @@ pub(crate) fn add_new_player(
     if state.status == state::GameStatus::Playing {
         return Err("Game already started".to_string());
     }
-    if state.players.len() >= state::MAX_PLAYERS {
+    if state.players.len() >= state.config.max_players() {
         return Err("Room is full".to_string());
     }
 
@@ -170,7 +170,7 @@ pub(crate) fn add_new_player(
         id: player_id.clone(),
         emoji: None,
         funds_token,
-        balance: state::STARTING_BALANCE,
+        balance: state.config.starting_balance(),
         stake: 0,
         folded: false,
         photo: None,
@@ -293,7 +293,7 @@ fn accept_blinds(
         .players
         .get_mut(&small_blind_player)
         .expect("Small blind player not found");
-    let small_blind_stake = small_blind_player.balance.min(state::SMALL_BLIND);
+    let small_blind_stake = small_blind_player.balance.min(state.config.small_blind());
     small_blind_player.balance = small_blind_player.balance - small_blind_stake;
     small_blind_player.stake += small_blind_stake;
     state.round.pot += small_blind_stake;
@@ -312,7 +312,7 @@ fn accept_blinds(
         .get_mut(&big_blind_player)
         .expect("Big blind player not found");
 
-    let big_blind_stake = big_blind_player.balance.min(state::BIG_BLIND);
+    let big_blind_stake = big_blind_player.balance.min(state.config.big_blind());
 
     big_blind_player.balance = big_blind_player.balance - big_blind_stake;
     big_blind_player.stake += big_blind_stake;
@@ -426,7 +426,7 @@ fn get_next_players_turn(
         let is_big_blind_first_round =
             current_player_id == state.players.keys().nth(1).expect("No players left");
         let current_player_stake_is_call_amount =
-            player_stake_in_round(state, current_player_id) == state::BIG_BLIND;
+            player_stake_in_round(state, current_player_id) == state.config.big_blind();
         if is_big_blind_first_round && current_player_stake_is_call_amount {
             return None;
         }
@@ -816,6 +816,11 @@ pub(crate) fn ticker(state: &state::State) -> Option<String> {
             item.payload.format(state)
         )
     }
+
+    if state.config.ticker_disabled() {
+        return None;
+    }
+
     let now = state::dt::Instant::default();
     let header = ticker_header(state, now)?;
     let items: Vec<_> = state
@@ -1054,10 +1059,10 @@ pub(crate) fn min_raise_to(state: &state::State) -> u64 {
 
     let largest_raise_diff = raises
         .windows(2)
-        .map(|w| w[1] - w[0])
+        .map(|w| w[1].saturating_sub(w[0])) // TODO: fix 'attempt to subtract with overflow' error after approx 300 games
         .max()
         .unwrap_or(0)
-        .max(state::BIG_BLIND);
+        .max(state.config.big_blind());
 
     let min_raise_to = max_raise + largest_raise_diff;
     min_raise_to
