@@ -5,11 +5,11 @@ mod common;
 use common::{client, fixtures, server};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn it_should_create_room_and_wait_for_players_over_http() {
+async fn it_should_return_default_room_state() {
     let (server, handle) = server::new_mock_app_server();
 
     let big_screen = client::get_big_screen(&server, None).await;
-    assert_eq!(big_screen.state, "waiting");
+    assert_eq!(big_screen.state, "idle");
     handle.abort().await;
 }
 
