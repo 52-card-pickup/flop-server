@@ -90,6 +90,14 @@ impl SharedState {
         }
     }
 
+    pub async fn remove(&self, player_id: &PlayerId) {
+        let mut registry = self.registry.write().await;
+        if let Some(room_code) = registry.remove_room(player_id) {
+            let mut rooms = self.states.write().unwrap();
+            rooms.remove(&room_code);
+        }
+    }
+
     pub async fn iter(&self) -> impl Iterator<Item = RoomState> {
         let rooms = self.states.read().unwrap();
         rooms.values().cloned().collect::<Vec<_>>().into_iter()
@@ -218,12 +226,14 @@ pub mod room {
 
         pub fn remove_room(&mut self, player_id: &PlayerId) -> Option<RoomCode> {
             let code = self.player_rooms.remove(player_id)?;
-            if self.player_rooms.values().all(|c| c != &code) {
-                self.rooms.remove(&code);
+            if self.player_rooms.values().any(|c| c == &code) {
+                return None;
+            }
 
-                if self.default.as_ref() == Some(&code) {
-                    self.default = None;
-                }
+            self.rooms.remove(&code);
+
+            if self.default.as_ref() == Some(&code) {
+                self.default = None;
             }
             Some(code)
         }
@@ -334,6 +344,7 @@ pub struct Player {
     pub folded: bool,
     pub photo: Option<PlayerPhoto>,
     pub ttl: Option<dt::Instant>,
+    pub apid: String,
     pub cards: (Card, Card),
 }
 
@@ -579,6 +590,8 @@ pub mod ticker {
         GameStarted,
         PlayerJoined(PlayerId),
         PlayerTurnTimeout(String),
+        PlayerLeft(String),
+        PlayerResumed(PlayerId),
         PlayerFolded(PlayerId),
         PlayerBet(PlayerId, BetAction),
         DealerRotated(PlayerId),
@@ -601,9 +614,13 @@ pub mod ticker {
                 player_id: &PlayerId,
                 action: &str,
             ) -> String {
-                match state.players.get(player_id) {
+                match state
+                    .players
+                    .get(player_id)
+                    .or_else(|| state.players.get_dormant(player_id))
+                {
                     Some(player) => return format!("Player {} {}", player.name, action),
-                    None => return format!("Previous player {}", action),
+                    None => return format!("Previous player {}", player_id),
                 }
             }
             match self {
@@ -613,6 +630,12 @@ pub mod ticker {
                 }
                 Self::PlayerTurnTimeout(player_name) => {
                     format!("Player {} timed out", player_name)
+                }
+                Self::PlayerLeft(player_name) => {
+                    format!("Player {} left the game", player_name)
+                }
+                Self::PlayerResumed(player_id) => {
+                    format_player_action(state, player_id, "rejoined the game")
                 }
                 Self::PlayerFolded(player_id) => format_player_action(state, player_id, "folded"),
                 Self::PlayerBet(player_id, action) => {
@@ -886,8 +909,11 @@ mod players {
 
     use super::{Player, PlayerId};
 
+    #[derive(Debug)]
+    struct DormantPlayer(Player);
+
     #[derive(Default, Debug)]
-    pub struct Players(VecDeque<(PlayerId, Player)>);
+    pub struct Players(VecDeque<(PlayerId, Player)>, Vec<DormantPlayer>);
 
     impl Players {
         pub fn insert(&mut self, player_id: PlayerId, player: Player) {
@@ -908,7 +934,10 @@ mod players {
 
         pub fn remove(&mut self, id: &PlayerId) -> Option<Player> {
             let idx = self.0.iter().position(|(pid, _)| pid == id)?;
-            self.0.remove(idx).map(|(_, p)| p)
+            let player = self.0.remove(idx).map(|(_, p)| p)?;
+            self.1.push(DormantPlayer(player.clone()));
+
+            Some(player)
         }
 
         pub fn pop_first(&mut self) -> Option<(PlayerId, Player)> {
@@ -937,6 +966,47 @@ mod players {
 
         pub fn len(&self) -> usize {
             self.0.len()
+        }
+
+        pub fn promote_dormant(&mut self, apid: &str) -> Option<Player> {
+            let player = self.peek_dormant(apid)?;
+            let idx = self
+                .1
+                .iter()
+                .position(|DormantPlayer(d)| d.id == player.id)?;
+            let dormant = self.1.remove(idx);
+            self.0.push_back((dormant.0.id.clone(), dormant.0.clone()));
+            Some(dormant.0)
+        }
+
+        pub fn peek_dormant(&self, apid: &str) -> Option<&Player> {
+            self.1.iter().rev().find_map(
+                |DormantPlayer(d)| {
+                    if d.apid == apid {
+                        Some(d)
+                    } else {
+                        None
+                    }
+                },
+            )
+        }
+
+        pub fn get_dormant(&self, player_id: &PlayerId) -> Option<&Player> {
+            self.1.iter().find_map(
+                |DormantPlayer(d)| {
+                    if d.id == *player_id {
+                        Some(d)
+                    } else {
+                        None
+                    }
+                },
+            )
+        }
+
+        pub fn get_non_dormant(&self, apid: &str) -> Option<&Player> {
+            self.0
+                .iter()
+                .find_map(|(_, p)| if p.apid == apid { Some(p) } else { None })
         }
     }
 }

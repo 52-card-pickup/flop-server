@@ -10,12 +10,11 @@ use crate::{
 
 use tracing::info;
 
-pub fn spawn_game_worker(state: state::SharedState) -> tokio::task::JoinHandle<()> {
-    async fn run_tasks(state: &state::RoomState) {
+pub fn spawn_game_worker(shared_state: state::SharedState) -> tokio::task::JoinHandle<()> {
+    async fn run_tasks(room_state: &state::RoomState, shared_state: &state::SharedState) {
         let now = state::dt::Instant::default();
 
-        let shared_state = state;
-        let state = shared_state.read().await;
+        let state = room_state.read().await;
         let status = state.status.clone();
         let last_update = state.last_update.as_u64();
         let players_turn = state.round.players_turn.clone();
@@ -33,7 +32,6 @@ pub fn spawn_game_worker(state: state::SharedState) -> tokio::task::JoinHandle<(
         drop(state);
 
         let now_ms: u64 = now.into();
-        let state = shared_state;
         let idle_ms = match status {
             state::GameStatus::Joining => Some(state::GAME_IDLE_TIMEOUT_SECONDS * 1000),
             state::GameStatus::Complete => Some(state::GAME_IDLE_TIMEOUT_SECONDS * 1000 * 4),
@@ -41,7 +39,7 @@ pub fn spawn_game_worker(state: state::SharedState) -> tokio::task::JoinHandle<(
         };
 
         if !expired_emoji_players.is_empty() {
-            let mut state = state.write().await;
+            let mut state = room_state.write().await;
             for player_id in expired_emoji_players {
                 if let Some(player) = state.players.get_mut(&player_id) {
                     player.emoji = None;
@@ -57,7 +55,7 @@ pub fn spawn_game_worker(state: state::SharedState) -> tokio::task::JoinHandle<(
                 std::process::exit(0);
             }
 
-            let mut state = state.write().await;
+            let mut state = room_state.write().await;
             if !state.round.deck.is_fresh() || state.status == state::GameStatus::Complete {
                 info!("Game idle timeout, resetting game");
                 *state = state::State::default();
@@ -69,36 +67,14 @@ pub fn spawn_game_worker(state: state::SharedState) -> tokio::task::JoinHandle<(
             let expired = player.ttl.map(|ttl| ttl < now).unwrap_or(false);
             if expired {
                 info!("Player {} turn expired", player.id);
-                let mut state = state.write().await;
+                let mut state = room_state.write().await;
 
-                _ = fold_player(&mut state, &player.id).map_err(|e| {
-                    info!(
-                        "Player {} turn expired, but could not fold: {}",
-                        player.id, e
-                    )
-                });
-
-                // TODO: notify player, soft kick
-                if let Some(player) = state.players.remove(&player.id) {
-                    info!("Player {} removed from game", player.id);
-                    state
-                        .ticker
-                        .emit(TickerEvent::PlayerTurnTimeout(player.name));
-                }
-                if state.players.len() < 2 {
-                    info!("Not enough players, pausing game until more players join");
-                    state.status = state::GameStatus::Joining;
-                    state.round = state::Round::default();
-                    for player in state.players.values_mut() {
-                        player.ttl = None;
-                    }
-                }
-                state.last_update.set_now();
+                timeout_player(&mut state, shared_state, &player.id).await;
             }
         }
 
         if ticker_expired {
-            let mut state = state.write().await;
+            let mut state = room_state.write().await;
             state.ticker.clear_expired_items(now);
         }
     }
@@ -107,10 +83,10 @@ pub fn spawn_game_worker(state: state::SharedState) -> tokio::task::JoinHandle<(
         loop {
             tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
-            state.cleanup().await;
+            shared_state.cleanup().await;
 
-            for state in state.iter().await {
-                run_tasks(&state).await;
+            for state in shared_state.iter().await {
+                run_tasks(&state, &shared_state).await;
             }
         }
     })
@@ -175,6 +151,7 @@ pub(crate) fn add_new_player(
         folded: false,
         photo: None,
         ttl: None,
+        apid: uuid::Uuid::new_v4().to_string(),
         cards: (card_1, card_2),
     };
     state.players.insert(player_id.clone(), player);
@@ -182,6 +159,81 @@ pub(crate) fn add_new_player(
         .ticker
         .emit(TickerEvent::PlayerJoined(player_id.clone()));
     Ok(player_id)
+}
+
+pub(crate) fn set_player_apid(state: &mut state::State, player_id: &state::PlayerId, apid: &str) {
+    if let Some(player) = state.players.get_mut(player_id) {
+        player.apid = apid.to_string();
+    }
+}
+
+async fn timeout_player(
+    state: &mut state::State,
+    shared_state: &state::SharedState,
+    player_id: &state::PlayerId,
+) {
+    _ = fold_player(state, &player_id).map_err(|e| {
+        info!(
+            "Player {} turn expired, but could not fold: {}",
+            player_id, e
+        )
+    });
+
+    // TODO: notify player, soft kick
+    if let Some(player) = state.players.remove(&player_id) {
+        shared_state.remove(&player_id).await;
+        info!("Player {} removed from game", player_id);
+        state
+            .ticker
+            .emit(TickerEvent::PlayerTurnTimeout(player.name));
+    }
+    if state.players.len() < 2 {
+        info!("Not enough players, pausing game until more players join");
+        state.status = state::GameStatus::Joining;
+        state.round = state::Round::default();
+        for player in state.players.values_mut() {
+            player.ttl = None;
+        }
+    }
+}
+
+pub(crate) fn remove_player(
+    state: &mut state::State,
+    player_id: &state::PlayerId,
+) -> Result<(), String> {
+    let player = state
+        .players
+        .get(player_id)
+        .ok_or("Player not found".to_string())?;
+
+    if state.round.players_turn.as_ref() == Some(&player.id) {
+        info!(
+            "Player {} left while it was their turn, folding first...",
+            player.id
+        );
+        fold_player(state, player_id)?;
+    }
+
+    match state.players.remove(player_id) {
+        Some(player) => {
+            info!("Player {} has been removed", player.id);
+            state
+                .ticker
+                .emit(TickerEvent::PlayerLeft(player.name.clone()));
+        }
+        None => Err("Player not found".to_string())?,
+    }
+
+    if state.players.len() < 2 {
+        info!("Not enough players, pausing game until more players join");
+        state.status = state::GameStatus::Joining;
+        state.round = state::Round::default();
+        for player in state.players.values_mut() {
+            player.ttl = None;
+        }
+    }
+
+    Ok(())
 }
 
 pub(crate) fn accept_player_bet(
@@ -337,13 +389,14 @@ fn reset_players(state: &mut state::State) {
 }
 
 fn next_turn(state: &mut state::State, current_player_id: Option<&state::PlayerId>) {
+    if state.players.len() < 2 {
+        info!("Not enough players, pausing game");
+        state.round.players_turn = None;
+        return;
+    }
+
     let next_player_id = match current_player_id {
         Some(player_id) => get_next_players_turn(&state, player_id),
-        None if state.players.len() < 2 => {
-            info!("Not enough players, pausing game");
-            state.round.players_turn = None;
-            return;
-        }
         None if state.round.cards_on_table.is_empty() => {
             let mut player_ids = state
                 .players

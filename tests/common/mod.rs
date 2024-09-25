@@ -1,4 +1,6 @@
 pub mod fixtures {
+    use std::collections::HashMap;
+
     use super::*;
     use axum_test::TestServer;
     use client::models::LittleScreen;
@@ -12,9 +14,14 @@ pub mod fixtures {
         let room_code = player1.room_code;
 
         // Other players join.
+        let mut player_apids = HashMap::new();
+        player_apids.insert(player1.player_id.clone(), player1.apid);
+
         let mut player_ids = vec![player1.player_id];
+
         for i in 2..=num_players {
             let player = client::join_room(server, &format!("player{}", i), &room_code).await;
+            player_apids.insert(player.player_id.clone(), player.apid);
             player_ids.push(player.player_id);
         }
 
@@ -23,6 +30,7 @@ pub mod fixtures {
         StartedGame {
             room_code,
             player_ids,
+            player_apids,
         }
     }
 
@@ -86,9 +94,12 @@ pub mod fixtures {
     }
 
     mod state {
+        use std::collections::HashMap;
+
         pub struct StartedGame {
             pub room_code: String,
             pub player_ids: Vec<String>,
+            pub player_apids: HashMap<String, String>,
         }
     }
 }
@@ -171,11 +182,9 @@ pub mod client {
     type Json = serde_json::Value;
 
     pub async fn get_big_screen(server: &TestServer, room_code: Option<&str>) -> BigScreen {
-        // curl -X GET "http://localhost:8080/api/v1/room" -H "room-code: 1234"
-        let request = server.get("/api/v1/room");
         let request = match room_code {
-            Some(room_code) => request.add_header("room-code", room_code),
-            None => request,
+            Some(room_code) => requests::get_big_screen_with_room_code(server, room_code),
+            None => requests::get_big_screen(server),
         };
         let response = request.await.json::<Json>();
 
@@ -187,8 +196,7 @@ pub mod client {
     }
 
     pub async fn get_little_screen(server: &TestServer, player_id: &str) -> LittleScreen {
-        let response = server
-            .get(&format!("/api/v1/player/{}", player_id))
+        let response = requests::get_little_screen(server, player_id)
             .await
             .json::<Json>();
 
@@ -203,41 +211,66 @@ pub mod client {
         }
     }
 
+    pub async fn leave_room(server: &TestServer, player_id: &str) {
+        requests::leave_room(server, player_id).await;
+    }
+
     pub async fn create_room(server: &TestServer, player_name: &str) -> CreatedRoom {
-        let response = server
-            .post("/api/v1/new")
+        let response = requests::create_room(server)
             .json(&json!({
                 "name": player_name,
             }))
-            .await
-            .json::<Json>();
+            .await;
+
+        let apid = response.cookie("apid").value().to_string();
+        let response = response.json::<Json>();
 
         CreatedRoom {
             raw: response.clone(),
             room_code: response["roomCode"].as_str().unwrap().to_string(),
             player_id: response["id"].as_str().unwrap().to_string(),
+            apid,
         }
     }
 
     pub async fn join_room(server: &TestServer, player_name: &str, room_code: &str) -> JoinedRoom {
-        let response = server
-            .post("/api/v1/join")
+        let response = requests::join_room(server)
             .json(&json!({
                 "name": player_name,
+                "roomCode": room_code,
+            }))
+            .await;
+
+        let apid = response.cookie("apid").value().to_string();
+        let response = response.json::<Json>();
+
+        JoinedRoom {
+            raw: response.clone(),
+            player_id: response["id"].as_str().unwrap().to_string(),
+            apid,
+        }
+    }
+
+    pub async fn resume_session(
+        server: &TestServer,
+        apid: &str,
+        room_code: &str,
+    ) -> ResumedSession {
+        let response = requests::resume_session(server, apid)
+            .json(&json!({
                 "roomCode": room_code,
             }))
             .await
             .json::<Json>();
 
-        JoinedRoom {
+        ResumedSession {
             raw: response.clone(),
             player_id: response["id"].as_str().unwrap().to_string(),
         }
     }
 
     pub async fn start_game(server: &TestServer, room_code: &str) {
-        server
-            .post("/api/v1/room/close")
+        requests::start_game(server)
             .json(&json!({
                 "roomCode": room_code,
             }))
@@ -245,8 +278,7 @@ pub mod client {
     }
 
     pub async fn player_check(server: &TestServer, player_id: &str) {
-        server
-            .post("/api/v1/play")
+        requests::play_turn(server)
             .json(&json!({
                 "playerId": player_id,
                 "stake": 0,
@@ -256,14 +288,49 @@ pub mod client {
     }
 
     pub async fn player_call(server: &TestServer, player_id: &str) {
-        server
-            .post("/api/v1/play")
+        requests::play_turn(server)
             .json(&json!({
                 "playerId": player_id,
                 "stake": 0,
                 "action": "call",
             }))
             .await;
+    }
+
+    pub mod requests {
+        use axum_test::{TestRequest, TestServer};
+
+        pub fn get_big_screen(server: &TestServer) -> TestRequest {
+            server.get("/api/v1/room")
+        }
+        pub fn get_big_screen_with_room_code(server: &TestServer, room_code: &str) -> TestRequest {
+            server
+                .get("/api/v1/room")
+                .add_header("room-code", room_code)
+        }
+        pub fn get_little_screen(server: &TestServer, player_id: &str) -> TestRequest {
+            server.get(&format!("/api/v1/player/{}", player_id))
+        }
+        pub fn leave_room(server: &TestServer, player_id: &str) -> TestRequest {
+            server.post(&format!("/api/v1/player/{}/leave", player_id))
+        }
+        pub fn create_room(server: &TestServer) -> TestRequest {
+            server.post("/api/v1/new")
+        }
+        pub fn join_room(server: &TestServer) -> TestRequest {
+            server.post("/api/v1/join")
+        }
+        pub fn resume_session(server: &TestServer, apid: &str) -> TestRequest {
+            server
+                .post("/api/v1/resume")
+                .add_cookie(("apid", apid).into())
+        }
+        pub fn start_game(server: &TestServer) -> TestRequest {
+            server.post("/api/v1/room/close")
+        }
+        pub fn play_turn(server: &TestServer) -> TestRequest {
+            server.post("/api/v1/play")
+        }
     }
 
     pub mod models {
@@ -287,8 +354,14 @@ pub mod client {
             pub raw: Value,
             pub room_code: String,
             pub player_id: String,
+            pub apid: String,
         }
         pub struct JoinedRoom {
+            pub raw: Value,
+            pub player_id: String,
+            pub apid: String,
+        }
+        pub struct ResumedSession {
             pub raw: Value,
             pub player_id: String,
         }

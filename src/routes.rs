@@ -1,7 +1,7 @@
 use std::sync::{Arc, OnceLock};
 
 use crate::{
-    game, models,
+    game, layer, models,
     state::{self, SharedState},
 };
 
@@ -13,7 +13,7 @@ use axum::{
     body,
     extract::{Multipart, Path, Query, State},
     http::{header, HeaderValue, StatusCode},
-    Json,
+    Extension, Json,
 };
 use axum_extra::TypedHeader;
 use tracing::info;
@@ -27,6 +27,10 @@ pub(crate) fn api_routes(state: state::SharedState) -> ApiRouter {
         .api_route("/room/close", post_with(close_room, docs::close_room))
         .api_route("/room/reset", post_with(reset_room, docs::reset_room))
         .api_route("/player/:player_id", get_with(player, docs::player))
+        .api_route(
+            "/player/:player_id/leave",
+            post_with(player_leave, docs::player_leave),
+        )
         .api_route(
             "/player/:player_id/send",
             post_with(player_send, docs::player_send),
@@ -46,6 +50,7 @@ pub(crate) fn api_routes(state: state::SharedState) -> ApiRouter {
         )
         .api_route("/new", post_with(new_room, docs::new_room))
         .api_route("/join", post_with(join, docs::join))
+        .api_route("/resume", post_with(resume, docs::resume))
         .api_route("/play", post_with(play, docs::play))
         .with_state(state)
 }
@@ -116,6 +121,28 @@ pub(crate) async fn player(
     };
 
     Ok(Json(game_player_state))
+}
+
+pub(crate) async fn player_leave(
+    State(state): State<SharedState>,
+    Path(player_id): Path<String>,
+) -> JsonResult<()> {
+    let player = utils::validate_player(&player_id, &state).await?;
+    let shared_state = state.clone();
+    let state = state.get(&player.id).await.ok_or(StatusCode::NOT_FOUND)?;
+    let mut state = state.write().await;
+
+    game::remove_player(&mut state, &player.id).map_err(|err| {
+        info!("Player {} failed to leave: {}", player_id, err);
+        StatusCode::BAD_REQUEST
+    })?;
+
+    shared_state.remove(&player.id).await;
+
+    state.last_update.set_now();
+    info!("Player {} left", player_id);
+
+    Ok(Json(()))
 }
 
 pub(crate) async fn player_send(
@@ -349,6 +376,7 @@ pub(crate) async fn play(
 
 pub(crate) async fn join(
     State(state): State<SharedState>,
+    Extension(layer::Apid(apid)): Extension<layer::Apid>,
     Json(payload): Json<models::JoinRequest>,
 ) -> JsonResult<models::JoinResponse> {
     if payload.name.is_empty()
@@ -370,10 +398,10 @@ pub(crate) async fn join(
         .await
         .map_err(|_| {
             info!(
-                "Player failed to join room: room code = {:?}, player id = {}",
+                "Player failed to join room, room not found: room code = {:?}, player id = {}",
                 req_room_code, player_id
             );
-            StatusCode::BAD_REQUEST
+            StatusCode::NOT_FOUND
         })?;
     info!("Player {} joined room = {:?}", player_id, room_code);
     let state = state
@@ -390,17 +418,67 @@ pub(crate) async fn join(
         }
     };
 
+    game::set_player_apid(&mut state, &id, &apid);
+
     state.last_update.set_now();
 
-    info!("Player {} joined", id);
+    info!("Player {} joined with name '{}'", id, payload.name);
     Ok(Json(models::JoinResponse {
         id: id.to_string(),
         room_code: room_code.to_string(),
     }))
 }
 
+pub(crate) async fn resume(
+    State(state): State<SharedState>,
+    Extension(layer::Apid(apid)): Extension<layer::Apid>,
+    Json(payload): Json<models::ResumeRequest>,
+) -> JsonResult<models::ResumeResponse> {
+    info!("Resuming previous session for anonymous player id {}", apid);
+
+    let shared_state = state.clone();
+    let room_state = utils::query_room_state(&state, payload.room_code.clone()).await?;
+    let mut state = room_state.write().await;
+
+    let player = {
+        match state.players.promote_dormant(&apid) {
+            Some(player) => {
+                let room_code = payload
+                    .room_code
+                    .as_ref()
+                    .and_then(|room_code| room_code.parse().ok());
+
+                _ = shared_state.join_room(&player.id, room_code.as_ref()).await;
+
+                state
+                    .players
+                    .get_mut(&player.id)
+                    .expect("player not found")
+                    .folded = true;
+
+                Some(player)
+            }
+            None => state.players.get_non_dormant(&apid).cloned(),
+        }
+    }
+    .ok_or_else(|| StatusCode::NOT_FOUND)?;
+
+    state
+        .ticker
+        .emit(state::TickerEvent::PlayerResumed(player.id.clone()));
+
+    state.last_update.set_now();
+    info!("Player {} resumed", player.id);
+
+    Ok(Json(models::ResumeResponse {
+        id: player.id.to_string(),
+        name: player.name,
+    }))
+}
+
 pub(crate) async fn new_room(
     State(state): State<SharedState>,
+    Extension(layer::Apid(apid)): Extension<layer::Apid>,
     Json(payload): Json<models::NewRoomRequest>,
 ) -> JsonResult<models::NewRoomResponse> {
     let player_id = state::PlayerId::default();
@@ -423,9 +501,11 @@ pub(crate) async fn new_room(
         }
     };
 
+    game::set_player_apid(&mut state, &id, &apid);
+
     state.last_update.set_now();
 
-    info!("Player {} joined", id);
+    info!("Player {} joined with name '{}'", id, payload.name);
     Ok(Json(models::NewRoomResponse {
         id: id.to_string(),
         room_code: room_code.to_string(),
@@ -434,14 +514,23 @@ pub(crate) async fn new_room(
 
 pub(crate) async fn peek_room(
     State(state): State<SharedState>,
+    Extension(layer::Apid(apid)): Extension<layer::Apid>,
     Json(payload): Json<models::PeekRoomRequest>,
 ) -> JsonResult<models::PeekRoomResponse> {
     let state = utils::query_room_state(&state, Some(payload.room_code)).await?;
     let state = state.read().await;
 
+    let resume_player_name = state
+        .players
+        .peek_dormant(&apid)
+        .or_else(|| state.players.get_non_dormant(&apid))
+        .map(|p| p.name.clone());
+
     let peek = models::PeekRoomResponse {
         state: game::game_phase(&state),
         players_count: state.players.len(),
+        can_resume: resume_player_name.is_some(),
+        resume_player_name,
     };
 
     Ok(Json(peek))
@@ -604,6 +693,10 @@ pub mod docs {
         op.description("Get the current state of a player.")
     }
 
+    pub fn player_leave(op: TransformOperation) -> TransformOperation {
+        op.description("Leave the game room.")
+    }
+
     pub fn player_send(op: TransformOperation) -> TransformOperation {
         op.description("Send a message to the game room.")
     }
@@ -634,6 +727,10 @@ pub mod docs {
 
     pub fn join(op: TransformOperation) -> TransformOperation {
         op.description("Join the game room.")
+    }
+
+    pub fn resume(op: TransformOperation) -> TransformOperation {
+        op.description("Resume previous session in the game room.")
     }
 
     pub fn peek_room(op: TransformOperation) -> TransformOperation {

@@ -22,6 +22,19 @@ pub(crate) struct NewRoomRequest {
     pub(crate) name: String,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ResumeRequest {
+    pub(crate) room_code: Option<String>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ResumeResponse {
+    pub(crate) id: String,
+    pub(crate) name: String,
+}
+
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct NewRoomResponse {
@@ -46,6 +59,8 @@ pub(crate) struct PeekRoomRequest {
 pub(crate) struct PeekRoomResponse {
     pub(crate) state: GamePhase,
     pub(crate) players_count: usize,
+    pub(crate) can_resume: bool,
+    pub(crate) resume_player_name: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
