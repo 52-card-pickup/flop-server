@@ -11,11 +11,10 @@ use crate::{
 use tracing::info;
 
 pub fn spawn_game_worker(shared_state: state::SharedState) -> tokio::task::JoinHandle<()> {
-    async fn run_tasks(state: &state::RoomState, shared_state: &state::SharedState) {
+    async fn run_tasks(room_state: &state::RoomState, shared_state: &state::SharedState) {
         let now = state::dt::Instant::default();
 
-        let shared_state = state;
-        let state = shared_state.read().await;
+        let state = room_state.read().await;
         let status = state.status.clone();
         let last_update = state.last_update.as_u64();
         let players_turn = state.round.players_turn.clone();
@@ -33,7 +32,6 @@ pub fn spawn_game_worker(shared_state: state::SharedState) -> tokio::task::JoinH
         drop(state);
 
         let now_ms: u64 = now.into();
-        let state = shared_state;
         let idle_ms = match status {
             state::GameStatus::Joining => Some(state::GAME_IDLE_TIMEOUT_SECONDS * 1000),
             state::GameStatus::Complete => Some(state::GAME_IDLE_TIMEOUT_SECONDS * 1000 * 4),
@@ -41,7 +39,7 @@ pub fn spawn_game_worker(shared_state: state::SharedState) -> tokio::task::JoinH
         };
 
         if !expired_emoji_players.is_empty() {
-            let mut state = state.write().await;
+            let mut state = room_state.write().await;
             for player_id in expired_emoji_players {
                 if let Some(player) = state.players.get_mut(&player_id) {
                     player.emoji = None;
@@ -57,7 +55,7 @@ pub fn spawn_game_worker(shared_state: state::SharedState) -> tokio::task::JoinH
                 std::process::exit(0);
             }
 
-            let mut state = state.write().await;
+            let mut state = room_state.write().await;
             if !state.round.deck.is_fresh() || state.status == state::GameStatus::Complete {
                 info!("Game idle timeout, resetting game");
                 *state = state::State::default();
@@ -69,14 +67,14 @@ pub fn spawn_game_worker(shared_state: state::SharedState) -> tokio::task::JoinH
             let expired = player.ttl.map(|ttl| ttl < now).unwrap_or(false);
             if expired {
                 info!("Player {} turn expired", player.id);
-                let mut state = state.write().await;
+                let mut state = room_state.write().await;
 
                 timeout_player(&mut state, shared_state, &player.id).await;
             }
         }
 
         if ticker_expired {
-            let mut state = state.write().await;
+            let mut state = room_state.write().await;
             state.ticker.clear_expired_items(now);
         }
     }
