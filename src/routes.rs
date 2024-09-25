@@ -645,8 +645,4 @@ pub mod docs {
     pub fn reset_room(op: TransformOperation) -> TransformOperation {
         op.description("Reset the game room.")
     }
-
-    pub fn dump(op: TransformOperation) -> TransformOperation {
-        op.description("Dump all room game states.")
-    }
 }
