@@ -176,7 +176,10 @@ pub mod room {
     use rand::Rng;
     use tracing::info;
 
-    use crate::state::{PlayerId, ROOM_CODE_LENGTH};
+    use crate::{
+        app_metrics::Metrics,
+        state::{PlayerId, ROOM_CODE_LENGTH},
+    };
 
     #[derive(Default)]
     pub struct RoomRegistry {
@@ -190,6 +193,7 @@ pub mod room {
             let room = RoomCode::default();
             self.rooms.insert(room.clone());
             self.player_rooms.insert(player_id.clone(), room.clone());
+            Metrics::g_rooms_total_set(self.rooms.len());
             room
         }
 
@@ -235,6 +239,9 @@ pub mod room {
             if self.default.as_ref() == Some(&code) {
                 self.default = None;
             }
+
+            Metrics::g_rooms_total_set(self.rooms.len());
+
             Some(code)
         }
 

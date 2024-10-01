@@ -12,9 +12,14 @@ aide = { version = "0.13.3", features = [
     "axum-multipart",
     "axum-headers",
 ] }
+autometrics = { version = "2.0.0", features = [
+    "metrics-0_21",
+    "prometheus-exporter",
+] }
 axum = { version = "0.7.4", features = ["multipart"] }
 axum-extra = { version = "0.9.3", features = ["cookie", "typed-header"] }
 headers = "0.4.0"
+metrics = "0.21"
 rand = "0.8.5"
 schemars = "0.8.16"
 serde = { version = "1.0.197", features = ["derive"] }

@@ -1,6 +1,7 @@
 use std::sync::{Arc, OnceLock};
 
 use crate::{
+    app_metrics::{metrics_labels, Metrics},
     game, layer, models,
     state::{self, SharedState},
 };
@@ -9,6 +10,7 @@ use aide::axum::{
     routing::{get_with, post_with},
     ApiRouter,
 };
+use autometrics::autometrics;
 use axum::{
     body,
     extract::{Multipart, Path, Query, State},
@@ -55,6 +57,7 @@ pub(crate) fn api_routes(state: state::SharedState) -> ApiRouter {
         .with_state(state)
 }
 
+#[autometrics(ok_if = metrics::is_success)]
 pub(crate) async fn room(
     State(state): State<SharedState>,
     Query(query): Query<models::PollQuery>,
@@ -97,6 +100,7 @@ pub(crate) async fn room(
     Ok(Json(game_client_state))
 }
 
+#[autometrics(ok_if = metrics::is_success)]
 pub(crate) async fn player(
     State(state): State<SharedState>,
     Path(player_id): Path<String>,
@@ -123,6 +127,7 @@ pub(crate) async fn player(
     Ok(Json(game_player_state))
 }
 
+#[autometrics(ok_if = metrics::is_success)]
 pub(crate) async fn player_leave(
     State(state): State<SharedState>,
     Path(player_id): Path<String>,
@@ -145,6 +150,7 @@ pub(crate) async fn player_leave(
     Ok(Json(()))
 }
 
+#[autometrics(ok_if = metrics::is_success)]
 pub(crate) async fn player_send(
     State(state): State<SharedState>,
     Path(player_id): Path<String>,
@@ -186,6 +192,7 @@ pub(crate) async fn player_send(
     Ok(Json(()))
 }
 
+#[autometrics(ok_if = metrics::is_success)]
 pub(crate) async fn get_player_transfer(
     State(state): State<SharedState>,
     Path(player_id): Path<String>,
@@ -207,6 +214,7 @@ pub(crate) async fn get_player_transfer(
     Ok(Json(models::PlayerAccountsResponse { accounts }))
 }
 
+#[autometrics(ok_if = metrics::is_success)]
 pub(crate) async fn post_player_transfer(
     State(state): State<SharedState>,
     Path(player_id): Path<String>,
@@ -232,6 +240,7 @@ pub(crate) async fn post_player_transfer(
     Ok(Json(()))
 }
 
+#[autometrics(ok_if = metrics::is_success)]
 pub(crate) async fn get_player_photo(
     State(state): State<SharedState>,
     Path(token): Path<String>,
@@ -288,6 +297,7 @@ pub(crate) async fn get_player_photo(
     Ok((headers, bytes.into()))
 }
 
+#[autometrics(ok_if = metrics::is_success)]
 pub(crate) async fn post_player_photo(
     State(state): State<SharedState>,
     Path(player_id): Path<String>,
@@ -334,6 +344,7 @@ pub(crate) async fn post_player_photo(
     Ok(Json(()))
 }
 
+#[autometrics(ok_if = metrics::is_success)]
 pub(crate) async fn play(
     State(state): State<SharedState>,
     Json(payload): Json<models::PlayRequest>,
@@ -374,6 +385,7 @@ pub(crate) async fn play(
     Ok(Json(()))
 }
 
+#[autometrics(ok_if = metrics::is_success)]
 pub(crate) async fn join(
     State(state): State<SharedState>,
     Extension(layer::Apid(apid)): Extension<layer::Apid>,
@@ -404,6 +416,9 @@ pub(crate) async fn join(
             StatusCode::NOT_FOUND
         })?;
     info!("Player {} joined room = {:?}", player_id, room_code);
+
+    Metrics::c_room_requests_total_incr(metrics_labels::room_requests(&room_code.to_string()));
+
     let state = state
         .get_room(&room_code)
         .await
@@ -423,12 +438,15 @@ pub(crate) async fn join(
     state.last_update.set_now();
 
     info!("Player {} joined with name '{}'", id, payload.name);
+    Metrics::c_players_total_incr();
+
     Ok(Json(models::JoinResponse {
         id: id.to_string(),
         room_code: room_code.to_string(),
     }))
 }
 
+#[autometrics(ok_if = metrics::is_success)]
 pub(crate) async fn resume(
     State(state): State<SharedState>,
     Extension(layer::Apid(apid)): Extension<layer::Apid>,
@@ -456,6 +474,8 @@ pub(crate) async fn resume(
                     .expect("player not found")
                     .folded = true;
 
+                Metrics::c_players_total_incr();
+
                 Some(player)
             }
             None => state.players.get_non_dormant(&apid).cloned(),
@@ -476,6 +496,7 @@ pub(crate) async fn resume(
     }))
 }
 
+#[autometrics(ok_if = metrics::is_success)]
 pub(crate) async fn new_room(
     State(state): State<SharedState>,
     Extension(layer::Apid(apid)): Extension<layer::Apid>,
@@ -485,7 +506,9 @@ pub(crate) async fn new_room(
     info!("Creating new room for player {}", player_id);
 
     let room_code = state.create_room(&player_id).await;
+
     info!("New room created for player {}: {:?}", player_id, room_code);
+    Metrics::c_room_requests_total_incr(metrics_labels::room_requests(&room_code.to_string()));
 
     let state = state
         .get_room(&room_code)
@@ -506,12 +529,15 @@ pub(crate) async fn new_room(
     state.last_update.set_now();
 
     info!("Player {} joined with name '{}'", id, payload.name);
+    Metrics::c_players_total_incr();
+
     Ok(Json(models::NewRoomResponse {
         id: id.to_string(),
         room_code: room_code.to_string(),
     }))
 }
 
+#[autometrics(ok_if = metrics::is_success)]
 pub(crate) async fn peek_room(
     State(state): State<SharedState>,
     Extension(layer::Apid(apid)): Extension<layer::Apid>,
@@ -536,6 +562,7 @@ pub(crate) async fn peek_room(
     Ok(Json(peek))
 }
 
+#[autometrics(ok_if = metrics::is_success)]
 pub(crate) async fn close_room(
     State(state): State<SharedState>,
     json: Option<Json<models::CloseRoomRequest>>,
@@ -555,6 +582,7 @@ pub(crate) async fn close_room(
     Ok(Json(()))
 }
 
+#[autometrics(ok_if = metrics::is_success)]
 pub(crate) async fn reset_room(
     State(state): State<SharedState>,
     room_code: Option<TypedHeader<models::headers::RoomCodeHeader>>,
@@ -572,12 +600,17 @@ pub(crate) async fn reset_room(
 }
 
 mod utils {
+    use autometrics::autometrics;
     use axum::http::StatusCode;
     use axum_extra::TypedHeader;
     use tracing::info;
 
-    use crate::{models, state};
+    use crate::{
+        app_metrics::{metrics_labels, Metrics},
+        models, state,
+    };
 
+    #[autometrics]
     pub async fn validate_player(
         player_id: &str,
         state: &state::SharedState,
@@ -601,16 +634,21 @@ mod utils {
         room_code: Option<String>,
     ) -> Result<state::RoomState, StatusCode> {
         let state = match room_code.filter(|s: &String| !s.is_empty()) {
-            Some(room_code) => {
-                let room_code = room_code.parse().map_err(|_| {
+            Some(room_code_str) => {
+                let room_code = room_code_str.parse().map_err(|_| {
                     info!(
                         "Failed to wait for room update: invalid room code '{}'",
-                        room_code
+                        room_code_str
                     );
                     StatusCode::BAD_REQUEST
                 })?;
 
-                state.get_room(&room_code).await
+                let room_state = state.get_room(&room_code).await;
+                if room_state.is_some() {
+                    let labels = metrics_labels::room_requests(&room_code_str);
+                    Metrics::c_room_requests_total_incr(labels);
+                }
+                room_state
             }
             None => state.get_default_room().await,
         };
@@ -679,6 +717,17 @@ mod utils {
                 _ = tokio::time::sleep(timeout) => {}
             }
         }
+    }
+}
+
+mod metrics {
+    use axum::{http::StatusCode, response::IntoResponse};
+
+    pub fn is_success<T>(response: &Result<T, StatusCode>) -> bool {
+        !matches!(
+            response.as_ref().err(),
+            Some(&StatusCode::OK) | Some(&StatusCode::NOT_FOUND)
+        )
     }
 }
 
