@@ -209,6 +209,7 @@ pub(crate) struct BallotDetails {
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct StartBallot {
+    pub(crate) room_code: String,
     pub(crate) action: BallotAction,
 }
 

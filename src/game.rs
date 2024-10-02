@@ -75,7 +75,7 @@ pub fn spawn_game_worker(shared_state: state::SharedState) -> tokio::task::JoinH
         }
 
         if ballot.is_some() {
-            let mut state = state.write().await;
+            let mut state = room_state.write().await;
             if let Some(vote) = state.ballot.as_ref() {
                 if vote.end_time.as_u64() < state::dt::Instant::default().as_u64() {
                     end_ballot(&mut state).unwrap();
@@ -1228,7 +1228,9 @@ pub(crate) fn end_ballot(state: &mut state::State) -> Result<(), String> {
 }
 
 fn double_blinds(state: &mut state::State) {
-    state.small_blind *= 2;
+    let config = state.config.clone();
+    let next_small_blind = state.config.small_blind() * 2;
+    state.config = config.with_small_blind(next_small_blind);
 }
 
 pub(crate) fn ballot_details(
@@ -1298,8 +1300,8 @@ pub(crate) fn start_vote_options(
         kick_player_options.clear();
     }
 
-    let are_blinds_less_than_half_of_max_player_balance =
-        state.small_blind * 2 < state.players.values().map(|p| p.balance).max().unwrap() / 2;
+    let are_blinds_less_than_half_of_max_player_balance = state.config.small_blind() * 2
+        < state.players.values().map(|p| p.balance).max().unwrap() / 2;
 
     let start_vote_options = models::StartBallotChoices {
         kick_player: kick_player_options,
@@ -1325,7 +1327,7 @@ fn consume_action_queue(state: &mut state::State) {
                 }
             }
             state::ballot::BallotAction::DoubleBlinds => {
-                info!("Doubling blinds to {}", state.small_blind * 2);
+                info!("Doubling blinds to {}", state.config.small_blind() * 2);
                 double_blinds(state);
             }
         }
@@ -1418,7 +1420,10 @@ mod tests {
         let pot_before_payout = state.round.pot;
         let winner_balance_before_payout = state.players.get(&player_1).unwrap().balance;
 
-        assert_eq!(pot_before_payout, (state.small_blind * 2 * 5) + (500 * 3));
+        assert_eq!(
+            pot_before_payout,
+            (state.config.small_blind() * 2 * 5) + (500 * 3)
+        );
         assert_eq!(cards_on_table(state).len(), 5);
 
         accept_player_bet(state, &player_1, P::Check).unwrap();
@@ -1431,7 +1436,7 @@ mod tests {
 
         // wins remaining 4 players blinds and remaining 2 players 500 bets
         let winner = state.players.get(&player_1).unwrap();
-        let expected_balance = STARTING_BALANCE + state.small_blind * 2 * 4 + 500 * 2;
+        let expected_balance = STARTING_BALANCE + state.config.small_blind() * 2 * 4 + 500 * 2;
         assert_eq!(
             winner_balance_before_payout + pot_before_payout,
             expected_balance
@@ -1456,13 +1461,16 @@ mod tests {
         assert_eq!(state.round.pot, 0);
 
         let winner = state.players.get(&player_2).unwrap();
-        assert_eq!(winner.balance, STARTING_BALANCE + state.small_blind);
+        assert_eq!(
+            winner.balance,
+            STARTING_BALANCE + state.config.small_blind()
+        );
 
         start_game(&mut state).unwrap();
         assert_eq!(cards_on_table(&state).len(), 0);
 
         let player_2_data = state.players.get(&player_2).unwrap();
-        assert_eq!(player_2_data.stake, state.small_blind);
+        assert_eq!(player_2_data.stake, state.config.small_blind());
 
         fold_player(&mut state, &player_2).expect("R2-P2");
 
@@ -1485,7 +1493,10 @@ mod tests {
         assert_eq!(state.round.pot, 0);
 
         let winner = state.players.get(&player_2).unwrap();
-        assert_eq!(winner.balance, STARTING_BALANCE + state.small_blind);
+        assert_eq!(
+            winner.balance,
+            STARTING_BALANCE + state.config.small_blind()
+        );
     }
 
     #[test]
@@ -1501,7 +1512,10 @@ mod tests {
         assert_eq!(state.round.pot, 0);
 
         let winner = state.players.get(&player_1).unwrap();
-        assert_eq!(winner.balance, STARTING_BALANCE + state.small_blind * 2);
+        assert_eq!(
+            winner.balance,
+            STARTING_BALANCE + state.config.small_blind() * 2
+        );
     }
 
     #[test]
@@ -1516,7 +1530,10 @@ mod tests {
         assert_eq!(state.round.pot, 0);
 
         let winner = state.players.get(&player_2).unwrap();
-        assert_eq!(winner.balance, STARTING_BALANCE + state.small_blind);
+        assert_eq!(
+            winner.balance,
+            STARTING_BALANCE + state.config.small_blind()
+        );
     }
 
     #[test]
@@ -1546,39 +1563,39 @@ mod tests {
     fn two_player_game_reraising_minimum_works() {
         let (mut state, (player_1, player_2)) =
             fixtures::start_two_player_game(GameFixture::Round4);
-        let big_blind = state.small_blind * 2;
+        let big_blind = state.config.small_blind() * 2;
         assert_eq!(state.round.pot, 40);
         accept_player_bet(&mut state, &player_1, P::RaiseTo(big_blind)).unwrap();
         assert_eq!(state.status, state::GameStatus::Playing);
         assert_eq!(state.round.pot, 60);
         assert_eq!(
             state.players.get(&player_1).unwrap().stake,
-            state.small_blind * 2 * 2
+            state.config.small_blind() * 2 * 2
         );
         assert_eq!(
             state.players.get(&player_2).unwrap().stake,
-            state.small_blind * 2
+            state.config.small_blind() * 2
         );
 
         accept_player_bet(&mut state, &player_2, P::RaiseTo(big_blind * 2)).unwrap();
         assert_eq!(state.round.pot, 100);
         assert_eq!(
             state.players.get(&player_1).unwrap().stake,
-            state.small_blind * 2 * 2
+            state.config.small_blind() * 2 * 2
         );
         assert_eq!(
             state.players.get(&player_2).unwrap().stake,
-            state.small_blind * 2 * 3
+            state.config.small_blind() * 2 * 3
         );
 
         accept_player_bet(&mut state, &player_1, P::RaiseTo(big_blind * 3)).unwrap();
         assert_eq!(
             state.players.get(&player_1).unwrap().stake,
-            state.small_blind * 2 * 4
+            state.config.small_blind() * 2 * 4
         );
         assert_eq!(
             state.players.get(&player_2).unwrap().stake,
-            state.small_blind * 2 * 3
+            state.config.small_blind() * 2 * 3
         );
 
         assert_eq!(state.status, state::GameStatus::Playing);
@@ -1600,7 +1617,10 @@ mod tests {
         assert_eq!(state.status, state::GameStatus::Complete);
 
         let winner = state.players.get(&player_2).unwrap();
-        assert_eq!(winner.balance, STARTING_BALANCE + state.small_blind);
+        assert_eq!(
+            winner.balance,
+            STARTING_BALANCE + state.config.small_blind()
+        );
 
         let completed = completed_game(&state).unwrap();
         assert_eq!(completed.winning_hand, None);
@@ -1713,7 +1733,7 @@ mod tests {
     fn two_player_game_raising_round_one() {
         let (mut state, (player_1, player_2)) =
             fixtures::start_two_player_game(GameFixture::Round1);
-        let big_blind = state.small_blind * 2;
+        let big_blind = state.config.small_blind() * 2;
 
         assert_eq!(cards_on_table(&state).len(), 0);
 
@@ -1729,22 +1749,22 @@ mod tests {
     fn two_player_game_raising_with_intermittent_calls_checking_balances() {
         let (mut state, (player_1, player_2)) =
             fixtures::start_two_player_game(GameFixture::Round1);
-        let big_blind = state.small_blind * 2;
+        let big_blind = state.config.small_blind() * 2;
 
         assert_eq!(cards_on_table(&state).len(), 0);
         assert_eq!(
             state.players.get(&player_1).unwrap().balance,
-            STARTING_BALANCE - state.small_blind
+            STARTING_BALANCE - state.config.small_blind()
         );
         assert_eq!(
             state.players.get(&player_2).unwrap().balance,
-            STARTING_BALANCE - state.small_blind * 2
+            STARTING_BALANCE - state.config.small_blind() * 2
         );
 
         accept_player_bet(&mut state, &player_1, P::Call).unwrap();
         assert_eq!(
             state.players.get(&player_1).unwrap().balance,
-            STARTING_BALANCE - state.small_blind * 2
+            STARTING_BALANCE - state.config.small_blind() * 2
         );
         accept_player_bet(&mut state, &player_2, P::RaiseTo(big_blind * 2)).unwrap();
         assert_eq!(
@@ -1762,24 +1782,24 @@ mod tests {
 
         player_start_ballot(&mut state, B::DoubleBlinds).unwrap();
         player_cast_vote_in_ballot(&mut state, &player_1, true).unwrap();
-        assert_eq!(state.small_blind, 10);
-        assert_eq!(state.small_blind * 2, 20);
+        assert_eq!(state.config.small_blind(), 10);
+        assert_eq!(state.config.small_blind() * 2, 20);
         player_cast_vote_in_ballot(&mut state, &player_2, true).unwrap();
         consume_action_queue(&mut state);
-        assert_eq!(state.small_blind, 20);
-        assert_eq!(state.small_blind * 2, 40);
+        assert_eq!(state.config.small_blind(), 20);
+        assert_eq!(state.config.small_blind() * 2, 40);
 
         player_start_ballot(&mut state, B::DoubleBlinds).unwrap();
         player_cast_vote_in_ballot(&mut state, &player_1, true).unwrap();
         player_cast_vote_in_ballot(&mut state, &player_2, false).unwrap();
-        assert_eq!(state.small_blind, 20);
-        assert_eq!(state.small_blind * 2, 40);
+        assert_eq!(state.config.small_blind(), 20);
+        assert_eq!(state.config.small_blind() * 2, 40);
 
         player_start_ballot(&mut state, B::DoubleBlinds).unwrap();
         player_cast_vote_in_ballot(&mut state, &player_1, false).unwrap();
         player_cast_vote_in_ballot(&mut state, &player_2, false).unwrap();
-        assert_eq!(state.small_blind, 20);
-        assert_eq!(state.small_blind * 2, 40);
+        assert_eq!(state.config.small_blind(), 20);
+        assert_eq!(state.config.small_blind() * 2, 40);
 
         fold_player(&mut state, &player_1).unwrap();
 
@@ -1800,24 +1820,24 @@ mod tests {
         player_cast_vote_in_ballot(&mut state, &player_2, true).unwrap();
         player_cast_vote_in_ballot(&mut state, &player_3, true).unwrap();
         consume_action_queue(&mut state);
-        assert_eq!(state.small_blind, 20);
-        assert_eq!(state.small_blind * 2, 40);
+        assert_eq!(state.config.small_blind(), 20);
+        assert_eq!(state.config.small_blind() * 2, 40);
 
         player_start_ballot(&mut state, B::DoubleBlinds).unwrap();
         player_cast_vote_in_ballot(&mut state, &player_1, true).unwrap();
         player_cast_vote_in_ballot(&mut state, &player_2, false).unwrap();
         player_cast_vote_in_ballot(&mut state, &player_3, true).unwrap();
         consume_action_queue(&mut state);
-        assert_eq!(state.small_blind, 40);
-        assert_eq!(state.small_blind * 2, 80);
+        assert_eq!(state.config.small_blind(), 40);
+        assert_eq!(state.config.small_blind() * 2, 80);
 
         player_start_ballot(&mut state, B::DoubleBlinds).unwrap();
         player_cast_vote_in_ballot(&mut state, &player_1, false).unwrap();
         player_cast_vote_in_ballot(&mut state, &player_2, false).unwrap();
         player_cast_vote_in_ballot(&mut state, &player_3, true).unwrap();
         consume_action_queue(&mut state);
-        assert_eq!(state.small_blind, 40);
-        assert_eq!(state.small_blind * 2, 80);
+        assert_eq!(state.config.small_blind(), 40);
+        assert_eq!(state.config.small_blind() * 2, 80);
 
         fold_player(&mut state, &player_3).unwrap();
         fold_player(&mut state, &player_1).unwrap();
@@ -1867,8 +1887,7 @@ mod tests {
 
     #[test]
     fn two_player_no_vote_to_kick() {
-        let (mut state, (player_1, _player_2)) =
-            fixtures::start_two_player_game(GameFixture::Round1);
+        let (state, (player_1, _player_2)) = fixtures::start_two_player_game(GameFixture::Round1);
 
         let voting_options = start_vote_options(&state, state.players.get(&player_1).unwrap());
         assert_eq!(voting_options.unwrap().kick_player.len(), 0);
@@ -1878,14 +1897,15 @@ mod tests {
     fn no_option_to_double_blinds_if_more_than_half_of_max_player_balance() {
         let (mut state, (player_1, _player_2)) =
             fixtures::start_two_player_game(GameFixture::Round1);
-        state.small_blind = 320;
+        let config = state.config.clone();
+        state.config = config.with_small_blind(320);
         let voting_options = start_vote_options(&state, state.players.get(&player_1).unwrap());
         assert_eq!(voting_options.unwrap().double_blinds, false);
     }
 
     #[test]
     fn three_player_no_vote_to_kick_self() {
-        let (mut state, (player_1, _player_2, _player_3)) = fixtures::start_three_player_game();
+        let (state, (player_1, _player_2, _player_3)) = fixtures::start_three_player_game();
         let voting_options = start_vote_options(&state, state.players.get(&player_1).unwrap());
         assert_eq!(
             voting_options

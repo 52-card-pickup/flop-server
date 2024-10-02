@@ -582,18 +582,22 @@ pub async fn start_ballot(
     State(state): State<SharedState>,
     Json(payload): Json<models::StartBallot>,
 ) -> JsonResult<()> {
+    let shared_state = state.clone();
+    let state = utils::query_room_state(&state, Some(payload.room_code)).await?;
     let mut state = state.write().await;
-
-    state.last_update.set_now();
 
     let action = match payload.action {
         models::BallotAction::DoubleBlinds => state::ballot::BallotAction::DoubleBlinds,
         models::BallotAction::KickPlayer(player_id) => {
-            let player = utils::validate_player(&player_id, &state)?;
+            let player = utils::validate_player(&player_id, &shared_state).await?;
             state::ballot::BallotAction::KickPlayer(player.id)
         }
     };
+
     game::player_start_ballot(&mut state, action).unwrap();
+
+    state.last_update.set_now();
+
     Ok(Json(()))
 }
 
@@ -601,9 +605,9 @@ pub async fn cast_vote_in_ballot(
     State(state): State<SharedState>,
     Json(payload): Json<models::CastVoteRequest>,
 ) -> JsonResult<()> {
+    let player = utils::validate_player(&payload.player_id, &state).await?;
+    let state = state.get(&player.id).await.ok_or(StatusCode::NOT_FOUND)?;
     let mut state = state.write().await;
-
-    state.last_update.set_now();
 
     let player_id = payload.player_id.parse().map_err(|_| {
         info!("Player {} failed: invalid player id", payload.player_id);
@@ -612,7 +616,9 @@ pub async fn cast_vote_in_ballot(
 
     game::player_cast_vote_in_ballot(&mut state, &player_id, payload.vote).unwrap();
 
+    state.last_update.set_now();
     info!("Player {} voted: {}", payload.player_id, payload.vote);
+
     Ok(Json(()))
 }
 
