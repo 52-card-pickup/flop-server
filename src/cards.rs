@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, fmt::Display};
 use rand::prelude::*;
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Deck(Vec<Card>);
 
 impl Deck {
@@ -350,7 +350,7 @@ impl PartialOrd for EvaluatedHand {
 
 #[cfg(test)]
 mod tests {
-    use crate::cards::tests::helpers::{cards_1p, cards_2p};
+    use helpers::{cards_1p, cards_2p};
 
     use super::*;
 

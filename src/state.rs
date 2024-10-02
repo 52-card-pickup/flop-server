@@ -1,24 +1,301 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use crate::cards::{self, Card, Deck};
 
 use axum::body::Bytes;
+use dt::Instant;
+use tokio::sync::RwLock;
+
 pub use id::PlayerId;
 pub use ticker::TickerEvent;
-use tokio::sync::RwLock;
 
 use self::players::Players;
 
-pub type SharedState = Arc<RwLock<State>>;
+pub type RoomState = Arc<RwLock<State>>;
+
+#[derive(Default, Clone)]
+pub struct SharedState {
+    states: Arc<std::sync::RwLock<HashMap<room::RoomCode, RoomState>>>,
+    registry: Arc<RwLock<room::RoomRegistry>>,
+    default_config: Arc<std::sync::RwLock<Option<config::RoomConfig>>>,
+}
+
+impl SharedState {
+    pub async fn get(&self, player_id: &PlayerId) -> Option<RoomState> {
+        let registry = self.registry.read().await;
+        let room_code = registry.get_room(&player_id)?;
+
+        self.get_room(&room_code).await
+    }
+
+    pub async fn get_room(&self, room: &room::RoomCode) -> Option<RoomState> {
+        let exisiting_room_state = {
+            let rooms = self.states.read().unwrap();
+            rooms.get(room).cloned()
+        };
+
+        let state = match exisiting_room_state {
+            Some(state) => state,
+            None => {
+                let registry = self.registry.read().await;
+                if !registry.room_exists(room) {
+                    return None;
+                }
+
+                let mut rooms = self.states.write().unwrap();
+                let state = Arc::new(RwLock::new(self.default_state()));
+                rooms.insert(room.clone(), state.clone());
+                state
+            }
+        };
+        Some(state.clone())
+    }
+
+    pub async fn get_default_room(&self) -> Option<RoomState> {
+        let room_code = self.get_default_room_code().await?;
+        self.get_room(&room_code).await
+    }
+
+    pub async fn get_default_room_code(&self) -> Option<room::RoomCode> {
+        let rooms = self.registry.read().await;
+        Some(rooms.get_default_room().cloned()?)
+    }
+
+    pub async fn create_room(&self, player_id: &PlayerId) -> room::RoomCode {
+        let mut rooms = self.registry.write().await;
+        let code = rooms.create_room(player_id);
+        let state = Arc::new(RwLock::new(self.default_state()));
+
+        let mut inner = self.states.write().unwrap();
+        inner.insert(code.clone(), state);
+
+        code
+    }
+
+    pub async fn join_room(
+        &self,
+        player_id: &PlayerId,
+        room_code: Option<&room::RoomCode>,
+    ) -> Result<room::RoomCode, ()> {
+        let mut rooms = self.registry.write().await;
+        match room_code.cloned() {
+            Some(code) => {
+                rooms.insert_player(player_id, &code)?;
+                Ok(code)
+            }
+            None => {
+                let code = rooms.get_or_create_default_room(player_id);
+                Ok(code)
+            }
+        }
+    }
+
+    pub async fn remove(&self, player_id: &PlayerId) {
+        let mut registry = self.registry.write().await;
+        if let Some(room_code) = registry.remove_room(player_id) {
+            let mut rooms = self.states.write().unwrap();
+            rooms.remove(&room_code);
+        }
+    }
+
+    pub async fn iter(&self) -> impl Iterator<Item = RoomState> {
+        let rooms = self.states.read().unwrap();
+        rooms.values().cloned().collect::<Vec<_>>().into_iter()
+    }
+
+    pub async fn iter_key_values(&self) -> impl Iterator<Item = (room::RoomCode, RoomState)> {
+        let rooms = self.states.read().unwrap();
+        rooms
+            .iter()
+            .map(|(code, state)| (code.clone(), state.clone()))
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+
+    pub async fn cleanup(&self) {
+        let mut rooms = self.states.write().unwrap().clone();
+        let mut to_remove = Vec::new();
+
+        for (room_code, state) in rooms.iter() {
+            let state = state.read().await;
+
+            if state.disposed {
+                continue;
+            }
+
+            let now = Instant::default().as_u64();
+            let last_update = state.last_update.as_u64();
+            let room_expires_at = last_update + GAME_IDLE_TIMEOUT_SECONDS * 1000;
+
+            if room_expires_at < now {
+                to_remove.push(room_code.clone());
+            }
+        }
+
+        if to_remove.is_empty() {
+            return;
+        }
+
+        let mut registry = self.registry.write().await;
+        for room_code in to_remove {
+            if let Some(state) = rooms.remove(&room_code) {
+                let mut state = state.write().await;
+                state.disposed = true;
+
+                for player_id in state.players.keys() {
+                    registry.remove_room(player_id);
+                }
+            }
+        }
+    }
+
+    pub fn set_default_config(&self, config: config::RoomConfig) {
+        let mut default_config = self.default_config.write().unwrap();
+        *default_config = Some(config);
+    }
+
+    fn default_state(&self) -> State {
+        match self.default_config.read() {
+            Ok(config) => {
+                let config = config.as_ref().cloned().unwrap_or_default();
+                let mut state = State::default();
+                state.config = config;
+                state
+            }
+            Err(_) => State::default(),
+        }
+    }
+}
+
+pub mod room {
+    use std::{
+        collections::{HashMap, HashSet},
+        str::FromStr,
+    };
+
+    use rand::Rng;
+    use tracing::info;
+
+    use crate::state::{PlayerId, ROOM_CODE_LENGTH};
+
+    #[derive(Default)]
+    pub struct RoomRegistry {
+        player_rooms: HashMap<PlayerId, RoomCode>,
+        rooms: HashSet<RoomCode>,
+        default: Option<RoomCode>,
+    }
+
+    impl RoomRegistry {
+        pub fn create_room(&mut self, player_id: &PlayerId) -> RoomCode {
+            let room = RoomCode::default();
+            self.rooms.insert(room.clone());
+            self.player_rooms.insert(player_id.clone(), room.clone());
+            room
+        }
+
+        pub fn get_or_create_default_room(&mut self, player_id: &PlayerId) -> RoomCode {
+            match self.default.clone() {
+                Some(room) => {
+                    self.insert_player(player_id, &room).unwrap();
+                    room
+                }
+                None => {
+                    let room = self.create_room(player_id);
+                    info!("Created default room: {:?}", &room);
+                    self.default = Some(room.clone());
+                    room
+                }
+            }
+        }
+
+        pub fn insert_player(&mut self, player_id: &PlayerId, room: &RoomCode) -> Result<(), ()> {
+            if !self.rooms.contains(&room) {
+                return Err(());
+            }
+            self.player_rooms.insert(player_id.clone(), room.clone());
+            Ok(())
+        }
+
+        pub fn get_room(&self, player_id: &PlayerId) -> Option<&RoomCode> {
+            self.player_rooms.get(player_id)
+        }
+
+        pub fn get_default_room(&self) -> Option<&RoomCode> {
+            self.default.as_ref()
+        }
+
+        pub fn remove_room(&mut self, player_id: &PlayerId) -> Option<RoomCode> {
+            let code = self.player_rooms.remove(player_id)?;
+            if self.player_rooms.values().any(|c| c == &code) {
+                return None;
+            }
+
+            self.rooms.remove(&code);
+
+            if self.default.as_ref() == Some(&code) {
+                self.default = None;
+            }
+            Some(code)
+        }
+
+        pub fn room_exists(&self, room: &RoomCode) -> bool {
+            self.rooms.contains(room)
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    pub struct RoomCode(String);
+
+    impl ToString for RoomCode {
+        #[inline]
+        fn to_string(&self) -> String {
+            <String as ToString>::to_string(&self.0)
+        }
+    }
+
+    impl FromStr for RoomCode {
+        type Err = ();
+
+        fn from_str(s: &str) -> Result<Self, Self::Err> {
+            let char_count = s.chars().count();
+            if char_count != ROOM_CODE_LENGTH {
+                return Err(());
+            }
+            if !s.chars().all(|c| c.is_ascii_alphabetic()) {
+                return Err(());
+            }
+
+            Ok(Self(s.to_ascii_uppercase()))
+        }
+    }
+
+    impl Default for RoomCode {
+        fn default() -> Self {
+            let mut rng = rand::thread_rng();
+            let alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".as_bytes();
+            let code: String = (0..ROOM_CODE_LENGTH)
+                .map(|_| {
+                    let idx = rng.gen_range(0..alphabet.len());
+                    alphabet[idx] as char
+                })
+                .collect();
+
+            Self(code)
+        }
+    }
+}
 
 pub const STARTING_BALANCE: u64 = 1000;
 pub const STARTING_SMALL_BLIND: u64 = 10;
+pub const PLAYER_EMOJI_TIMEOUT_SECONDS: u64 = 5;
 pub const TICKER_ITEM_TIMEOUT_SECONDS: u64 = 10;
 pub const TICKER_ITEM_GAP_MILLISECONDS: u64 = 500;
 pub const PLAYER_TURN_TIMEOUT_SECONDS: u64 = 60;
 pub const GAME_IDLE_TIMEOUT_SECONDS: u64 = 300;
+pub const ROOM_CODE_LENGTH: usize = 4;
 pub const MAX_PLAYERS: usize = 10;
 
+#[derive(Debug, Default)]
 pub struct State {
     pub players: Players,
     pub round: Round,
@@ -26,25 +303,12 @@ pub struct State {
     pub ticker: ticker::Ticker,
     pub status: GameStatus,
     pub ballot: Option<ballot::Ballot>,
-    pub small_blind: u64,
     pub action_queue: Vec<ballot::BallotAction>,
-}
-impl Default for State {
-    fn default() -> Self {
-        State {
-            players: Default::default(),
-            round: Default::default(),
-            last_update: Default::default(),
-            status: Default::default(),
-            ballot: None,
-            small_blind: STARTING_SMALL_BLIND,
-            action_queue: Default::default(),
-            ticker: Default::default(),
-        }
-    }
+    pub config: config::RoomConfig,
+    pub disposed: bool,
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct Round {
     pub pot: u64,
     pub deck: Deck,
@@ -55,16 +319,33 @@ pub struct Round {
     pub completed: Option<CompletedRound>,
 }
 
+impl Into<RoomState> for State {
+    fn into(self) -> RoomState {
+        Arc::new(RwLock::new(self))
+    }
+}
+
 #[derive(Clone)]
+pub struct PlayerPhoto(pub Arc<Bytes>, pub token::Token);
+
+impl std::fmt::Debug for PlayerPhoto {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("PlayerPhoto").field(&self.1).finish()
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct Player {
     pub name: String,
     pub id: PlayerId,
+    pub emoji: Option<(ticker::emoji::TickerEmoji, dt::Instant)>,
     pub funds_token: token::Token,
     pub balance: u64,
     pub stake: u64,
     pub folded: bool,
-    pub photo: Option<(Arc<Bytes>, token::Token)>,
+    pub photo: Option<PlayerPhoto>,
     pub ttl: Option<dt::Instant>,
+    pub apid: String,
     pub cards: (Card, Card),
 }
 
@@ -89,6 +370,7 @@ pub enum GameStatus {
     Joining,
     Playing,
     Complete,
+    Idle,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,6 +385,12 @@ mod id {
 
     #[derive(Debug, Clone, PartialEq, Eq, Hash, Ord, PartialOrd)]
     pub struct PlayerId(String);
+
+    impl PlayerId {
+        pub fn new_unchecked(player_id: &str) -> Self {
+            Self(player_id.to_string())
+        }
+    }
 
     impl Display for PlayerId {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -213,6 +501,7 @@ pub mod dt {
     }
 
     pub mod watch {
+        use std::fmt::Debug;
         use std::future::Future;
         use std::sync::{Arc, Mutex};
 
@@ -222,6 +511,12 @@ pub mod dt {
 
         #[derive(Clone, Default)]
         pub struct SignalInstant(Instant, Arc<Mutex<Vec<oneshot::Sender<Instant>>>>);
+
+        impl Debug for SignalInstant {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                self.0.fmt(f)
+            }
+        }
 
         impl SignalInstant {
             pub fn as_u64(&self) -> u64 {
@@ -293,12 +588,15 @@ pub mod ticker {
     use crate::{cards, state::ballot};
 
     use super::{dt::Instant, BetAction, PlayerId};
+    static TICKER_DISABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
     #[derive(Debug, Clone)]
     pub enum TickerEvent {
         GameStarted,
         PlayerJoined(PlayerId),
         PlayerTurnTimeout(String),
+        PlayerLeft(String),
+        PlayerResumed(PlayerId),
         PlayerFolded(PlayerId),
         PlayerBet(PlayerId, BetAction),
         DealerRotated(PlayerId),
@@ -342,9 +640,13 @@ pub mod ticker {
                 player_id: &PlayerId,
                 action: &str,
             ) -> String {
-                match state.players.get(player_id) {
+                match state
+                    .players
+                    .get(player_id)
+                    .or_else(|| state.players.get_dormant(player_id))
+                {
                     Some(player) => return format!("Player {} {}", player.name, action),
-                    None => return format!("Previous player {}", action),
+                    None => return format!("Previous player {}", player_id),
                 }
             }
             match self {
@@ -354,6 +656,12 @@ pub mod ticker {
                 }
                 Self::PlayerTurnTimeout(player_name) => {
                     format!("Player {} timed out", player_name)
+                }
+                Self::PlayerLeft(player_name) => {
+                    format!("Player {} left the game", player_name)
+                }
+                Self::PlayerResumed(player_id) => {
+                    format_player_action(state, player_id, "rejoined the game")
                 }
                 Self::PlayerFolded(player_id) => format_player_action(state, player_id, "folded"),
                 Self::PlayerBet(player_id, action) => {
@@ -521,6 +829,7 @@ pub mod ticker {
         }
     }
 
+    #[derive(Debug)]
     pub struct TickerItem {
         pub seq_index: usize,
         pub start: Instant,
@@ -528,7 +837,7 @@ pub mod ticker {
         pub payload: TickerEvent,
     }
 
-    #[derive(Default)]
+    #[derive(Debug, Default)]
     pub struct Ticker {
         events: Vec<TickerItem>,
         counter: usize,
@@ -591,6 +900,10 @@ pub mod ticker {
         pub fn timeout_ms(&self) -> u64 {
             super::TICKER_ITEM_TIMEOUT_SECONDS * 1000
         }
+    }
+
+    pub(crate) fn is_disabled() -> bool {
+        *TICKER_DISABLED.get_or_init(|| std::env::var("DISABLE_TICKER").is_ok())
     }
 
     #[cfg(test)]
@@ -673,8 +986,11 @@ mod players {
 
     use super::{Player, PlayerId};
 
-    #[derive(Default)]
-    pub struct Players(VecDeque<(PlayerId, Player)>);
+    #[derive(Debug)]
+    struct DormantPlayer(Player);
+
+    #[derive(Default, Debug)]
+    pub struct Players(VecDeque<(PlayerId, Player)>, Vec<DormantPlayer>);
 
     impl Players {
         pub fn insert(&mut self, player_id: PlayerId, player: Player) {
@@ -695,7 +1011,10 @@ mod players {
 
         pub fn remove(&mut self, id: &PlayerId) -> Option<Player> {
             let idx = self.0.iter().position(|(pid, _)| pid == id)?;
-            self.0.remove(idx).map(|(_, p)| p)
+            let player = self.0.remove(idx).map(|(_, p)| p)?;
+            self.1.push(DormantPlayer(player.clone()));
+
+            Some(player)
         }
 
         pub fn pop_first(&mut self) -> Option<(PlayerId, Player)> {
@@ -725,6 +1044,122 @@ mod players {
         pub fn len(&self) -> usize {
             self.0.len()
         }
+
+        pub fn promote_dormant(&mut self, apid: &str) -> Option<Player> {
+            let player = self.peek_dormant(apid)?;
+            let idx = self
+                .1
+                .iter()
+                .position(|DormantPlayer(d)| d.id == player.id)?;
+            let dormant = self.1.remove(idx);
+            self.0.push_back((dormant.0.id.clone(), dormant.0.clone()));
+            Some(dormant.0)
+        }
+
+        pub fn peek_dormant(&self, apid: &str) -> Option<&Player> {
+            self.1.iter().rev().find_map(
+                |DormantPlayer(d)| {
+                    if d.apid == apid {
+                        Some(d)
+                    } else {
+                        None
+                    }
+                },
+            )
+        }
+
+        pub fn get_dormant(&self, player_id: &PlayerId) -> Option<&Player> {
+            self.1.iter().find_map(
+                |DormantPlayer(d)| {
+                    if d.id == *player_id {
+                        Some(d)
+                    } else {
+                        None
+                    }
+                },
+            )
+        }
+
+        pub fn get_non_dormant(&self, apid: &str) -> Option<&Player> {
+            self.0
+                .iter()
+                .find_map(|(_, p)| if p.apid == apid { Some(p) } else { None })
+        }
+    }
+}
+
+pub mod config {
+    use super::*;
+
+    #[derive(Debug, Clone)]
+    pub struct RoomConfig {
+        small_blind: u64,
+        max_players: usize,
+        starting_balance: u64,
+        ticker_disabled: bool,
+    }
+
+    impl RoomConfig {
+        pub fn small_blind(&self) -> u64 {
+            self.small_blind
+        }
+
+        pub fn big_blind(&self) -> u64 {
+            self.small_blind * 2
+        }
+
+        pub fn with_small_blind(mut self, small_blind: u64) -> Self {
+            assert!(small_blind > 0);
+            assert!(small_blind < self.starting_balance);
+            self.small_blind = small_blind;
+            self
+        }
+
+        pub fn max_players(&self) -> usize {
+            self.max_players
+        }
+
+        pub fn with_max_players(mut self, max_players: usize) -> Self {
+            assert!(max_players > 0);
+            self.max_players = max_players.min(MAX_PLAYERS);
+            self
+        }
+
+        pub fn starting_balance(&self) -> u64 {
+            self.starting_balance
+        }
+
+        pub fn with_starting_balance(mut self, starting_balance: u64) -> Self {
+            assert!(starting_balance > 0);
+            assert!(starting_balance > self.small_blind);
+            self.starting_balance = starting_balance;
+            self
+        }
+
+        pub fn ticker_disabled(&self) -> bool {
+            self.ticker_disabled
+        }
+
+        pub fn with_ticker_enabled(mut self) -> Self {
+            self.ticker_disabled = false;
+            self
+        }
+
+        pub fn with_ticker_disabled(mut self) -> Self {
+            self.ticker_disabled = true;
+            self
+        }
+    }
+
+    impl Default for RoomConfig {
+        fn default() -> Self {
+            Self {
+                small_blind: STARTING_SMALL_BLIND,
+                max_players: MAX_PLAYERS,
+                starting_balance: STARTING_BALANCE,
+                ticker_disabled: ticker::is_disabled(),
+            }
+        }
     }
 }
 
@@ -732,7 +1167,7 @@ pub mod ballot {
     use super::dt;
     use super::PlayerId;
 
-    #[derive(Default, Clone)]
+    #[derive(Debug, Clone, Default)]
     pub struct Ballot {
         pub end_time: dt::Instant,
         pub votes: Vec<(PlayerId, bool)>,

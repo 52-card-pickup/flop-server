@@ -1,20 +1,7 @@
-use std::{
-    net::{IpAddr, Ipv4Addr, SocketAddr},
-    sync::Arc,
-};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-use aide::{axum::ApiRouter, openapi::OpenApi, transform::TransformOpenApi};
-use axum::Extension;
-use tokio::sync::RwLock;
-use tower_http::cors::CorsLayer;
+use flop_server::{game, state};
 use tracing::info;
-
-mod cards;
-mod doc_routes;
-mod game;
-mod models;
-mod routes;
-mod state;
 
 #[tokio::main]
 async fn main() {
@@ -26,20 +13,13 @@ async fn main() {
         println!("{error}");
     });
     aide::gen::extract_schemas(true);
-    let mut api = OpenApi::default();
 
     // initialize state
-    let state = state::State::default();
-    let state: state::SharedState = Arc::new(RwLock::new(state));
+    let state = state::SharedState::default();
     game::spawn_game_worker(state.clone());
 
     // build our application with a route
-    let app = ApiRouter::new()
-        .nest_api_service("/api/v1", routes::api_routes(state.clone()))
-        .nest_api_service("/docs", doc_routes::docs_routes(state.clone()))
-        .finish_api_with(&mut api, api_docs)
-        .layer(Extension(Arc::new(api)))
-        .layer(CorsLayer::permissive());
+    let app = flop_server::create_application(state);
 
     // run our app with hyper, listening globally - by default on port 5000
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), api_port());
@@ -49,13 +29,9 @@ async fn main() {
     info!("listening on {}", listener.local_addr().unwrap());
     info!("Example docs are accessible at {}", docs_url);
 
-    axum::serve(listener, app).await.unwrap();
-}
-
-fn api_docs(api: TransformOpenApi) -> TransformOpenApi {
-    api.title("flop: The Party Poker Game")
-        .summary("API for poker game")
-        .description(include_str!("../README.md"))
+    axum::serve(listener, app.into_make_service())
+        .await
+        .unwrap();
 }
 
 fn api_port() -> u16 {

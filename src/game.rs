@@ -1,4 +1,7 @@
-use std::collections::HashMap;
+use std::{
+    collections::{hash_map, HashMap},
+    hash::Hash,
+};
 
 use crate::{
     cards, models,
@@ -7,33 +10,44 @@ use crate::{
 
 use tracing::info;
 
-pub(crate) fn spawn_game_worker(state: state::SharedState) {
-    async fn run_tasks(state: &state::SharedState) {
+pub fn spawn_game_worker(shared_state: state::SharedState) -> tokio::task::JoinHandle<()> {
+    async fn run_tasks(room_state: &state::RoomState, shared_state: &state::SharedState) {
         let now = state::dt::Instant::default();
 
-        let (last_update, current_player, status, ticker_expired, ballot) = {
-            let state = state.read().await;
-            let last_update = state.last_update.as_u64();
-            let players_turn = state.round.players_turn.clone();
-            let current_player = players_turn.and_then(|id| state.players.get(&id)).cloned();
-            let ballot = state.ballot.clone();
-            let ticker_expired = state.ticker.has_expired_items(now);
-
-            (
-                last_update,
-                current_player,
-                state.status,
-                ticker_expired,
-                ballot,
-            )
-        };
+        let state = room_state.read().await;
+        let status = state.status.clone();
+        let last_update = state.last_update.as_u64();
+        let players_turn = state.round.players_turn.clone();
+        let current_player = players_turn.and_then(|id| state.players.get(&id)).cloned();
+        let ballot = state.ballot.clone();
+        let ticker_expired = state.ticker.has_expired_items(now);
+        let players = state.players.iter();
+        let expired_emoji_players = players
+            .filter(|(_, p)| {
+                p.emoji.map_or(false, |(_, start)| {
+                    start.as_u64() + state::PLAYER_EMOJI_TIMEOUT_SECONDS * 1000 < now.as_u64()
+                })
+            })
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+        drop(state);
 
         let now_ms: u64 = now.into();
         let idle_ms = match status {
             state::GameStatus::Joining => Some(state::GAME_IDLE_TIMEOUT_SECONDS * 1000),
             state::GameStatus::Complete => Some(state::GAME_IDLE_TIMEOUT_SECONDS * 1000 * 4),
-            state::GameStatus::Playing => None,
+            state::GameStatus::Playing | state::GameStatus::Idle => None,
         };
+
+        if !expired_emoji_players.is_empty() {
+            let mut state = room_state.write().await;
+            for player_id in expired_emoji_players {
+                if let Some(player) = state.players.get_mut(&player_id) {
+                    player.emoji = None;
+                }
+            }
+            state.last_update.set_now();
+        }
 
         if idle_ms.map_or(false, |idle_ms| now_ms - last_update > idle_ms) {
             if let Ok("true") = std::env::var("KILL_ON_IDLE").as_deref() {
@@ -42,7 +56,7 @@ pub(crate) fn spawn_game_worker(state: state::SharedState) {
                 std::process::exit(0);
             }
 
-            let mut state = state.write().await;
+            let mut state = room_state.write().await;
             if !state.round.deck.is_fresh() || state.status == state::GameStatus::Complete {
                 info!("Game idle timeout, resetting game");
                 *state = state::State::default();
@@ -54,31 +68,9 @@ pub(crate) fn spawn_game_worker(state: state::SharedState) {
             let expired = player.ttl.map(|ttl| ttl < now).unwrap_or(false);
             if expired {
                 info!("Player {} turn expired", player.id);
-                let mut state = state.write().await;
+                let mut state = room_state.write().await;
 
-                _ = fold_player(&mut state, &player.id).map_err(|e| {
-                    info!(
-                        "Player {} turn expired, but could not fold: {}",
-                        player.id, e
-                    )
-                });
-
-                // TODO: notify player, soft kick
-                if let Some(player) = state.players.remove(&player.id) {
-                    info!("Player {} removed from game", player.id);
-                    state
-                        .ticker
-                        .emit(TickerEvent::PlayerTurnTimeout(player.name));
-                }
-                if state.players.len() < 2 {
-                    info!("Not enough players, pausing game until more players join");
-                    state.status = state::GameStatus::Joining;
-                    state.round = state::Round::default();
-                    for player in state.players.values_mut() {
-                        player.ttl = None;
-                    }
-                }
-                state.last_update.set_now();
+                timeout_player(&mut state, shared_state, &player.id).await;
             }
         }
 
@@ -92,7 +84,7 @@ pub(crate) fn spawn_game_worker(state: state::SharedState) {
         }
 
         if ticker_expired {
-            let mut state = state.write().await;
+            let mut state = room_state.write().await;
             state.ticker.clear_expired_items(now);
         }
     }
@@ -100,9 +92,14 @@ pub(crate) fn spawn_game_worker(state: state::SharedState) {
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-            run_tasks(&state).await;
+
+            shared_state.cleanup().await;
+
+            for state in shared_state.iter().await {
+                run_tasks(&state, &shared_state).await;
+            }
         }
-    });
+    })
 }
 
 pub(crate) fn start_game(state: &mut state::State) -> Result<(), String> {
@@ -136,26 +133,35 @@ pub(crate) fn start_game(state: &mut state::State) -> Result<(), String> {
 pub(crate) fn add_new_player(
     state: &mut state::State,
     player_name: &str,
+    player_id: state::PlayerId,
 ) -> Result<state::PlayerId, String> {
     if state.status == state::GameStatus::Playing {
         return Err("Game already started".to_string());
     }
-    if state.players.len() >= state::MAX_PLAYERS {
+    if state.players.len() >= state.config.max_players() {
         return Err("Room is full".to_string());
     }
+
+    let player_name = player_name.replace(char::is_whitespace, " ");
+    let player_name = player_name.trim().to_owned();
+    if player_name.is_empty() {
+        return Err("Name cannot be empty".to_string());
+    }
+
     let funds_token = state::token::Token::default();
-    let player_id = state::PlayerId::default();
     let card_1 = state.round.deck.pop();
     let card_2 = state.round.deck.pop();
     let player = state::Player {
-        name: player_name.to_owned(),
+        name: player_name,
         id: player_id.clone(),
+        emoji: None,
         funds_token,
-        balance: state::STARTING_BALANCE,
+        balance: state.config.starting_balance(),
         stake: 0,
         folded: false,
         photo: None,
         ttl: None,
+        apid: uuid::Uuid::new_v4().to_string(),
         cards: (card_1, card_2),
     };
     state.players.insert(player_id.clone(), player);
@@ -163,6 +169,81 @@ pub(crate) fn add_new_player(
         .ticker
         .emit(TickerEvent::PlayerJoined(player_id.clone()));
     Ok(player_id)
+}
+
+pub(crate) fn set_player_apid(state: &mut state::State, player_id: &state::PlayerId, apid: &str) {
+    if let Some(player) = state.players.get_mut(player_id) {
+        player.apid = apid.to_string();
+    }
+}
+
+async fn timeout_player(
+    state: &mut state::State,
+    shared_state: &state::SharedState,
+    player_id: &state::PlayerId,
+) {
+    _ = fold_player(state, &player_id).map_err(|e| {
+        info!(
+            "Player {} turn expired, but could not fold: {}",
+            player_id, e
+        )
+    });
+
+    // TODO: notify player, soft kick
+    if let Some(player) = state.players.remove(&player_id) {
+        shared_state.remove(&player_id).await;
+        info!("Player {} removed from game", player_id);
+        state
+            .ticker
+            .emit(TickerEvent::PlayerTurnTimeout(player.name));
+    }
+    if state.players.len() < 2 {
+        info!("Not enough players, pausing game until more players join");
+        state.status = state::GameStatus::Joining;
+        state.round = state::Round::default();
+        for player in state.players.values_mut() {
+            player.ttl = None;
+        }
+    }
+}
+
+pub(crate) fn remove_player(
+    state: &mut state::State,
+    player_id: &state::PlayerId,
+) -> Result<(), String> {
+    let player = state
+        .players
+        .get(player_id)
+        .ok_or("Player not found".to_string())?;
+
+    if state.round.players_turn.as_ref() == Some(&player.id) {
+        info!(
+            "Player {} left while it was their turn, folding first...",
+            player.id
+        );
+        fold_player(state, player_id)?;
+    }
+
+    match state.players.remove(player_id) {
+        Some(player) => {
+            info!("Player {} has been removed", player.id);
+            state
+                .ticker
+                .emit(TickerEvent::PlayerLeft(player.name.clone()));
+        }
+        None => Err("Player not found".to_string())?,
+    }
+
+    if state.players.len() < 2 {
+        info!("Not enough players, pausing game until more players join");
+        state.status = state::GameStatus::Joining;
+        state.round = state::Round::default();
+        for player in state.players.values_mut() {
+            player.ttl = None;
+        }
+    }
+
+    Ok(())
 }
 
 pub(crate) fn accept_player_bet(
@@ -274,7 +355,7 @@ fn accept_blinds(
         .players
         .get_mut(&small_blind_player)
         .expect("Small blind player not found");
-    let small_blind_stake = small_blind_player.balance.min(state.small_blind);
+    let small_blind_stake = small_blind_player.balance.min(state.config.small_blind());
     small_blind_player.balance = small_blind_player.balance - small_blind_stake;
     small_blind_player.stake += small_blind_stake;
     state.round.pot += small_blind_stake;
@@ -293,7 +374,7 @@ fn accept_blinds(
         .get_mut(&big_blind_player)
         .expect("Big blind player not found");
 
-    let big_blind_stake = big_blind_player.balance.min(state.small_blind * 2);
+    let big_blind_stake = big_blind_player.balance.min(state.config.big_blind());
 
     big_blind_player.balance = big_blind_player.balance - big_blind_stake;
     big_blind_player.stake += big_blind_stake;
@@ -318,13 +399,14 @@ fn reset_players(state: &mut state::State) {
 }
 
 fn next_turn(state: &mut state::State, current_player_id: Option<&state::PlayerId>) {
+    if state.players.len() < 2 {
+        info!("Not enough players, pausing game");
+        state.round.players_turn = None;
+        return;
+    }
+
     let next_player_id = match current_player_id {
         Some(player_id) => get_next_players_turn(&state, player_id),
-        None if state.players.len() < 2 => {
-            info!("Not enough players, pausing game");
-            state.round.players_turn = None;
-            return;
-        }
         None if state.round.cards_on_table.is_empty() => {
             let mut player_ids = state
                 .players
@@ -407,7 +489,7 @@ fn get_next_players_turn(
         let is_big_blind_first_round =
             current_player_id == state.players.keys().nth(1).expect("No players left");
         let current_player_stake_is_call_amount =
-            player_stake_in_round(state, current_player_id) == state.small_blind * 2;
+            player_stake_in_round(state, current_player_id) == state.config.big_blind();
         if is_big_blind_first_round && current_player_stake_is_call_amount {
             return None;
         }
@@ -769,6 +851,7 @@ pub(crate) fn game_phase(state: &state::State) -> models::GamePhase {
         state::GameStatus::Joining => models::GamePhase::Waiting,
         state::GameStatus::Playing => models::GamePhase::Playing,
         state::GameStatus::Complete => models::GamePhase::Complete,
+        state::GameStatus::Idle => models::GamePhase::Idle,
     }
 }
 
@@ -798,6 +881,11 @@ pub(crate) fn ticker(state: &state::State) -> Option<String> {
             item.payload.format(state)
         )
     }
+
+    if state.config.ticker_disabled() {
+        return None;
+    }
+
     let now = state::dt::Instant::default();
     let header = ticker_header(state, now)?;
     let items: Vec<_> = state
@@ -861,6 +949,7 @@ pub(crate) fn completed_game(state: &state::State) -> Option<models::CompletedGa
 }
 
 pub(crate) fn room_players(state: &state::State) -> Vec<models::GameClientPlayer> {
+    let current_player_id = state.round.players_turn.as_ref();
     let players = state
         .players
         .iter()
@@ -868,16 +957,27 @@ pub(crate) fn room_players(state: &state::State) -> Vec<models::GameClientPlayer
             name: p.name.clone(),
             balance: p.balance,
             folded: p.folded,
+            emoji: p.emoji.as_ref().map(|(e, _)| e.to_string()),
             photo: player_photo_url(p),
-            turn_expires_dt: p.ttl.map(|dt| dt.into()),
+            color_hue: player_color_hue(p),
+            turn_expires_dt: p.ttl.map(|dt| dt.into()).filter(|_| {
+                current_player_id == Some(&p.id) && state.status == state::GameStatus::Playing
+            }),
         })
         .collect();
     players
 }
 
 fn player_photo_url(p: &state::Player) -> Option<String> {
-    let (_, token) = p.photo.as_ref()?;
+    let state::PlayerPhoto(_, token) = p.photo.as_ref()?;
     Some(format!("player/photo/{}", token))
+}
+
+fn player_color_hue(p: &state::Player) -> u16 {
+    let mut hasher = hash_map::DefaultHasher::default();
+    p.id.hash(&mut hasher);
+    let degrees = std::hash::Hasher::finish(&hasher) % 360;
+    degrees as u16
 }
 
 pub(crate) fn fold_player(
@@ -1025,10 +1125,10 @@ pub(crate) fn min_raise_to(state: &state::State) -> u64 {
 
     let largest_raise_diff = raises
         .windows(2)
-        .map(|w| w[1] - w[0])
+        .map(|w| w[1].saturating_sub(w[0])) // TODO: fix 'attempt to subtract with overflow' error after approx 300 games
         .max()
         .unwrap_or(0)
-        .max(state.small_blind * 2);
+        .max(state.config.big_blind());
 
     let min_raise_to = max_raise + largest_raise_diff;
     min_raise_to
@@ -1277,11 +1377,11 @@ mod tests {
         let state = &mut state;
         state.round.deck = cards::Deck::ordered();
 
-        let player_1 = add_new_player(state, "player_1").unwrap();
-        let player_2 = add_new_player(state, "player_2").unwrap();
-        let player_3 = add_new_player(state, "player_3").unwrap();
-        let player_4 = add_new_player(state, "player_4").unwrap();
-        let player_5 = add_new_player(state, "player_5").unwrap();
+        let player_1 = fixtures::add_player(state, "player_1").unwrap();
+        let player_2 = fixtures::add_player(state, "player_2").unwrap();
+        let player_3 = fixtures::add_player(state, "player_3").unwrap();
+        let player_4 = fixtures::add_player(state, "player_4").unwrap();
+        let player_5 = fixtures::add_player(state, "player_5").unwrap();
 
         assert_eq!(state.players.len(), 5);
         assert_eq!(state.status, state::GameStatus::Joining);
@@ -1889,8 +1989,8 @@ mod tests {
         ) -> (state::State, (state::PlayerId, state::PlayerId)) {
             let mut state = state::State::default();
 
-            let player_1 = add_new_player(&mut state, "player_1").unwrap();
-            let player_2 = add_new_player(&mut state, "player_2").unwrap();
+            let player_1 = add_player(&mut state, "player_1").unwrap();
+            let player_2 = add_player(&mut state, "player_2").unwrap();
 
             assert_eq!(state.players.len(), 2);
             assert_eq!(state.status, state::GameStatus::Joining);
@@ -1967,9 +2067,9 @@ mod tests {
             let mut state = state::State::default();
             state.round.deck = cards::Deck::ordered();
 
-            let player_1 = add_new_player(&mut state, "player_1").unwrap();
-            let player_2 = add_new_player(&mut state, "player_2").unwrap();
-            let player_3 = add_new_player(&mut state, "player_3").unwrap();
+            let player_1 = add_player(&mut state, "player_1").unwrap();
+            let player_2 = add_player(&mut state, "player_2").unwrap();
+            let player_3 = add_player(&mut state, "player_3").unwrap();
 
             assert_eq!(state.players.len(), 3);
             assert_eq!(state.status, state::GameStatus::Joining);
@@ -2003,6 +2103,14 @@ mod tests {
 
             // set the round deck
             state.round.deck = cards::Deck::ordered();
+        }
+
+        pub fn add_player(
+            state: &mut state::State,
+            player_name: &str,
+        ) -> Result<state::PlayerId, String> {
+            let player_id = state::PlayerId::default();
+            super::add_new_player(state, player_name, player_id)
         }
     }
 }

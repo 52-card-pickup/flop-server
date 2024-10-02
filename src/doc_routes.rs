@@ -6,7 +6,6 @@ use aide::{
         ApiRouter, IntoApiResponse,
     },
     openapi::OpenApi,
-    redoc::Redoc,
     scalar::Scalar,
 };
 use axum::{Extension, Json};
@@ -27,16 +26,6 @@ pub fn docs_routes(state: SharedState) -> ApiRouter {
             "/",
             get_with(
                 Scalar::new("/docs/private/api.json")
-                    .with_title("Aide Axum")
-                    .axum_handler(),
-                |op| op.description("This documentation page."),
-            ),
-            |p| p.security_requirement("ApiKey"),
-        )
-        .api_route_with(
-            "/redoc",
-            get_with(
-                Redoc::new("/docs/private/api.json")
                     .with_title("Aide Axum")
                     .axum_handler(),
                 |op| op.description("This documentation page."),
