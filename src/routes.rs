@@ -52,6 +52,11 @@ pub(crate) fn api_routes(state: state::SharedState) -> ApiRouter {
         .api_route("/join", post_with(join, docs::join))
         .api_route("/resume", post_with(resume, docs::resume))
         .api_route("/play", post_with(play, docs::play))
+        .api_route("/ballot/start", post_with(start_ballot, docs::start_vote))
+        .api_route(
+            "/ballot/cast",
+            post_with(cast_vote_in_ballot, docs::cast_vote),
+        )
         .with_state(state)
 }
 
@@ -118,6 +123,8 @@ pub(crate) async fn player(
         turn_expires_dt: game::turn_expires_dt(&state, &player.id),
         last_update: state.last_update.as_u64(),
         current_round_stake: game::player_stake_in_round(&state, &player.id),
+        ballot_details: game::ballot_details(&state, &player),
+        start_ballot_options: game::start_vote_options(&state, &player),
     };
 
     Ok(Json(game_player_state))
@@ -571,6 +578,50 @@ pub(crate) async fn reset_room(
     Ok(Json(()))
 }
 
+pub async fn start_ballot(
+    State(state): State<SharedState>,
+    Json(payload): Json<models::StartBallot>,
+) -> JsonResult<()> {
+    let shared_state = state.clone();
+    let state = utils::query_room_state(&state, Some(payload.room_code)).await?;
+    let mut state = state.write().await;
+
+    let action = match payload.action {
+        models::BallotAction::DoubleBlinds => state::ballot::BallotAction::DoubleBlinds,
+        models::BallotAction::KickPlayer(player_id) => {
+            let player = utils::validate_player(&player_id, &shared_state).await?;
+            state::ballot::BallotAction::KickPlayer(player.id)
+        }
+    };
+
+    game::player_start_ballot(&mut state, action).unwrap();
+
+    state.last_update.set_now();
+
+    Ok(Json(()))
+}
+
+pub async fn cast_vote_in_ballot(
+    State(state): State<SharedState>,
+    Json(payload): Json<models::CastVoteRequest>,
+) -> JsonResult<()> {
+    let player = utils::validate_player(&payload.player_id, &state).await?;
+    let state = state.get(&player.id).await.ok_or(StatusCode::NOT_FOUND)?;
+    let mut state = state.write().await;
+
+    let player_id = payload.player_id.parse().map_err(|_| {
+        info!("Player {} failed: invalid player id", payload.player_id);
+        StatusCode::BAD_REQUEST
+    })?;
+
+    game::player_cast_vote_in_ballot(&mut state, &player_id, payload.vote).unwrap();
+
+    state.last_update.set_now();
+    info!("Player {} voted: {}", payload.player_id, payload.vote);
+
+    Ok(Json(()))
+}
+
 mod utils {
     use axum::http::StatusCode;
     use axum_extra::TypedHeader;
@@ -743,5 +794,13 @@ pub mod docs {
 
     pub fn reset_room(op: TransformOperation) -> TransformOperation {
         op.description("Reset the game room.")
+    }
+
+    pub fn start_vote(op: TransformOperation) -> TransformOperation {
+        op.description("Start a new vote.")
+    }
+
+    pub fn cast_vote(op: TransformOperation) -> TransformOperation {
+        op.description("Vote on a motion.")
     }
 }
