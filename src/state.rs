@@ -176,7 +176,10 @@ pub mod room {
     use rand::Rng;
     use tracing::info;
 
-    use crate::state::{PlayerId, ROOM_CODE_LENGTH};
+    use crate::{
+        app_metrics::Metrics,
+        state::{PlayerId, ROOM_CODE_LENGTH},
+    };
 
     #[derive(Default)]
     pub struct RoomRegistry {
@@ -190,6 +193,7 @@ pub mod room {
             let room = RoomCode::default();
             self.rooms.insert(room.clone());
             self.player_rooms.insert(player_id.clone(), room.clone());
+            Metrics::g_rooms_total_set(self.rooms.len());
             room
         }
 
@@ -235,6 +239,9 @@ pub mod room {
             if self.default.as_ref() == Some(&code) {
                 self.default = None;
             }
+
+            Metrics::g_rooms_total_set(self.rooms.len());
+
             Some(code)
         }
 
@@ -1020,6 +1027,7 @@ pub mod config {
         max_players: usize,
         starting_balance: u64,
         ticker_disabled: bool,
+        card_deal_disabled: bool,
     }
 
     impl RoomConfig {
@@ -1072,6 +1080,15 @@ pub mod config {
             self.ticker_disabled = true;
             self
         }
+
+        pub(crate) fn card_deal_disabled(&self) -> bool {
+            self.card_deal_disabled
+        }
+
+        pub(crate) fn with_card_deal_disabled(mut self) -> Self {
+            self.card_deal_disabled = true;
+            self
+        }
     }
 
     impl Default for RoomConfig {
@@ -1081,6 +1098,7 @@ pub mod config {
                 max_players: MAX_PLAYERS,
                 starting_balance: STARTING_BALANCE,
                 ticker_disabled: ticker::is_disabled(),
+                card_deal_disabled: false,
             }
         }
     }

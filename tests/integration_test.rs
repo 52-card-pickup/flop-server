@@ -118,6 +118,57 @@ async fn it_should_not_show_card_of_rejoining_players() {
     handle.abort().await;
 }
 
+#[tokio::test]
+async fn it_should_deal_new_cards_after_player_rejoins() {
+    let (server, handle) = server::new_mock_app_server();
+
+    //  start game with 3 players
+    let game = fixtures::start_full_game(&server, 2).await;
+    fixtures::play_rounds_until_winner(&server, &game).await;
+
+    // get player cards
+    let big_screen = client::get_big_screen(&server, Some(&game.room_code)).await;
+    let completed_game = big_screen.raw["completed"]
+        .as_object()
+        .expect("completed is not an object");
+    let player_cards = completed_game["playerCards"]
+        .as_array()
+        .expect("player_cards is not an array");
+
+    // player 1 leaves
+    let leaving_player_id = game.player_ids.get(0).unwrap().clone();
+    client::leave_room(&server, &leaving_player_id).await;
+
+    // player 1 rejoins
+    let rejoining_player_apid = game.player_apids.get(&leaving_player_id).unwrap();
+    let rejoining_player =
+        client::resume_session(&server, rejoining_player_apid, &game.room_code).await;
+    assert_eq!(rejoining_player.player_id, leaving_player_id);
+
+    // play game
+    client::start_game(&server, &game.room_code).await;
+    fixtures::play_rounds_until_winner(&server, &game).await;
+
+    // get player cards
+    let big_screen = client::get_big_screen(&server, Some(&game.room_code)).await;
+    let completed_game = big_screen.raw["completed"]
+        .as_object()
+        .expect("completed is not an object");
+    let new_player_cards = completed_game["playerCards"]
+        .as_array()
+        .expect("player_cards is not an array");
+
+    // player 1 should have new cards
+    assert_ne!(player_cards[0], new_player_cards[0]);
+    assert_ne!(player_cards[0], new_player_cards[1]);
+
+    // player 2 should have new cards
+    assert_ne!(player_cards[1], new_player_cards[1]);
+    assert_ne!(player_cards[1], new_player_cards[0]);
+
+    handle.abort().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn it_should_start_game_and_play_3p_until_end_over_http() {
     let (server, handle) = server::new_http_app_server();

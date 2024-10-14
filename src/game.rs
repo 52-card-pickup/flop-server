@@ -105,7 +105,7 @@ pub(crate) fn start_game(state: &mut state::State) -> Result<(), String> {
     state.round.completed = None;
     reset_players(state);
     next_turn(state, None);
-    if state.status == state::GameStatus::Complete {
+    if !state.config.card_deal_disabled() {
         state.round.deck = cards::Deck::default();
         for player in state.players.values_mut() {
             let card_1 = state.round.deck.pop();
@@ -1159,6 +1159,7 @@ mod tests {
         let player_1_cards = cards_in_hand(&state, &player_1).unwrap();
         let player_2_cards = cards_in_hand(&state, &player_2).unwrap();
 
+        state.config = Default::default();
         start_game(&mut state).unwrap();
         let new_player_1_cards = cards_in_hand(&state, &player_1).unwrap();
         let new_player_2_cards = cards_in_hand(&state, &player_2).unwrap();
@@ -1172,8 +1173,10 @@ mod tests {
     #[test]
     fn game_pays_outright_winner_from_pot() {
         let mut state = state::State::default();
-        let state = &mut state;
+        state.config = state.config.with_card_deal_disabled();
         state.round.deck = cards::Deck::ordered();
+
+        let state = &mut state;
 
         let player_1 = fixtures::add_player(state, "player_1").unwrap();
         let player_2 = fixtures::add_player(state, "player_2").unwrap();
@@ -1675,6 +1678,7 @@ mod tests {
             (state::PlayerId, state::PlayerId, state::PlayerId),
         ) {
             let mut state = state::State::default();
+            state.config = state.config.with_card_deal_disabled();
             state.round.deck = cards::Deck::ordered();
 
             let player_1 = add_player(&mut state, "player_1").unwrap();
@@ -1712,6 +1716,7 @@ mod tests {
             loser.cards = (deck.pop(), deck.pop());
 
             // set the round deck
+            state.config = state.config.clone().with_card_deal_disabled();
             state.round.deck = cards::Deck::ordered();
         }
 
