@@ -758,8 +758,8 @@ mod utils {
         ),
         StatusCode,
     > {
-        match state.register_big_screen(&apid).await {
-            Some(code) => Ok((None, code)),
+        let (room_code, pair_screen_code) = match state.register_big_screen(&apid).await {
+            Some(code) => (None, code),
             None => {
                 let (code, screen) = state
                     .get_big_screen_by_apid(&apid)
@@ -769,12 +769,14 @@ mod utils {
                 if changed {
                     let screen = state.get_big_screen_by_code(&code).await;
                     let screen = screen.ok_or(StatusCode::NOT_FOUND)?;
-                    Ok((screen.room_code, code))
+                    (screen.room_code, code)
                 } else {
-                    Ok((screen.room_code, code))
+                    (screen.room_code, code)
                 }
             }
-        }
+        };
+
+        Ok((room_code, pair_screen_code))
     }
 
     async fn wait_for_update(state: &state::RoomState, query: models::PollQuery) {
