@@ -28,6 +28,7 @@ pub(crate) fn api_routes(state: state::SharedState) -> ApiRouter {
         .api_route("/room/peek", post_with(peek_room, docs::peek_room))
         .api_route("/room/close", post_with(close_room, docs::close_room))
         .api_route("/room/reset", post_with(reset_room, docs::reset_room))
+        .api_route("/pair", post_with(pair, docs::pair))
         .api_route("/player/:player_id", get_with(player, docs::player))
         .api_route(
             "/player/:player_id/leave",
@@ -60,12 +61,14 @@ pub(crate) fn api_routes(state: state::SharedState) -> ApiRouter {
 #[autometrics(ok_if = metrics::is_success)]
 pub(crate) async fn room(
     State(state): State<SharedState>,
+    Extension(layer::Apid(apid)): Extension<layer::Apid>,
     Query(query): Query<models::PollQuery>,
     room_code: Option<TypedHeader<models::headers::RoomCodeHeader>>,
 ) -> JsonResult<models::GameClientRoom> {
     static EMPTY: OnceLock<state::RoomState> = OnceLock::new();
 
-    let room_code = match utils::wait_by_room_code(&state, query, room_code).await {
+    let shared_state = state.clone();
+    let room_code = match utils::wait_by_room_code(&state, query.clone(), room_code).await {
         Ok(room_code) => Some(room_code),
         Err(StatusCode::NOT_FOUND) => None,
         Err(status) => return Err(status),
@@ -85,6 +88,12 @@ pub(crate) async fn room(
     };
 
     let state = state.read().await;
+    let (room_code, pair_screen_code) = match state.status {
+        state::GameStatus::Idle => utils::wait_by_screen_apid(&shared_state, query, &apid)
+            .await
+            .map(|(room, screen)| (room.or(room_code), Some(screen)))?,
+        _ => (room_code, None),
+    };
 
     let game_client_state = models::GameClientRoom {
         state: game::game_phase(&state),
@@ -94,6 +103,7 @@ pub(crate) async fn room(
         completed: game::completed_game(&state),
         ticker: game::ticker(&state),
         room_code: room_code.map(|r| r.to_string()),
+        pair_screen_code: pair_screen_code.map(|c| c.to_string()),
         last_update: state.last_update.as_u64(),
     };
 
@@ -599,6 +609,41 @@ pub(crate) async fn reset_room(
     Ok(Json(()))
 }
 
+#[autometrics(ok_if = metrics::is_success)]
+pub(crate) async fn pair(
+    State(state): State<SharedState>,
+    Json(payload): Json<models::PairRequest>,
+) -> JsonResult<()> {
+    let screen_code = payload.screen_code.parse().map_err(|_| {
+        info!(
+            "Failed to pair big screen: invalid screen code '{}'",
+            payload.screen_code
+        );
+        StatusCode::BAD_REQUEST
+    })?;
+
+    let room_code = payload.room_code.parse().map_err(|_| {
+        info!(
+            "Failed to pair big screen: invalid room code '{}'",
+            payload.room_code
+        );
+        StatusCode::BAD_REQUEST
+    })?;
+
+    state
+        .pair_screen_with_room(&screen_code, &room_code)
+        .await
+        .map_err(|_| {
+            info!(
+                "Failed to pair big screen: screen code '{:?}' or room code '{:?}' not found",
+                screen_code, room_code
+            );
+            StatusCode::NOT_FOUND
+        })?;
+
+    Ok(Json(()))
+}
+
 mod utils {
     use autometrics::autometrics;
     use axum::http::StatusCode;
@@ -702,6 +747,38 @@ mod utils {
         Ok(room_code)
     }
 
+    pub async fn wait_by_screen_apid(
+        state: &state::SharedState,
+        query: models::PollQuery,
+        apid: &str,
+    ) -> Result<
+        (
+            Option<state::room::RoomCode>,
+            state::screens::PairScreenCode,
+        ),
+        StatusCode,
+    > {
+        let (room_code, pair_screen_code) = match state.register_big_screen(&apid).await {
+            Some(code) => (None, code),
+            None => {
+                let (code, screen) = state
+                    .get_big_screen_by_apid(&apid)
+                    .await
+                    .ok_or(StatusCode::NOT_FOUND)?;
+                let changed = wait_for_screen_update(&screen, query).await;
+                if changed {
+                    let screen = state.get_big_screen_by_code(&code).await;
+                    let screen = screen.ok_or(StatusCode::NOT_FOUND)?;
+                    (screen.room_code, code)
+                } else {
+                    (screen.room_code, code)
+                }
+            }
+        };
+
+        Ok((room_code, pair_screen_code))
+    }
+
     async fn wait_for_update(state: &state::RoomState, query: models::PollQuery) {
         if let Some(last_update) = query.since {
             let rx = {
@@ -709,19 +786,39 @@ mod utils {
                 state.last_update.wait_for(last_update.into())
             };
 
-            let timeout_ms = query.timeout.unwrap_or(5_000);
-            let timeout = std::time::Duration::from_millis(timeout_ms);
-
             tokio::select! {
                 _ = rx => {}
-                _ = tokio::time::sleep(timeout) => {}
+                _ = sleep_from_timeout_query(query.timeout) => {}
             }
         }
+    }
+
+    async fn wait_for_screen_update(
+        screen: &state::screens::Screen,
+        query: models::PollQuery,
+    ) -> bool {
+        match query.since {
+            Some(last_update) => {
+                let rx = screen.last_update.wait_for(last_update.into());
+
+                tokio::select! {
+                    _ = rx => true,
+                    _ = sleep_from_timeout_query(query.timeout) => false,
+                }
+            }
+            _ => false,
+        }
+    }
+
+    async fn sleep_from_timeout_query(timeout: Option<u64>) {
+        let timeout_ms = timeout.unwrap_or(5_000);
+        let timeout = std::time::Duration::from_millis(timeout_ms);
+        tokio::time::sleep(timeout).await;
     }
 }
 
 mod metrics {
-    use axum::{http::StatusCode, response::IntoResponse};
+    use axum::http::StatusCode;
 
     pub fn is_success<T>(response: &Result<T, StatusCode>) -> bool {
         !matches!(
@@ -792,5 +889,9 @@ pub mod docs {
 
     pub fn reset_room(op: TransformOperation) -> TransformOperation {
         op.description("Reset the game room.")
+    }
+
+    pub fn pair(op: TransformOperation) -> TransformOperation {
+        op.description("Pairs a big screen with a room.")
     }
 }

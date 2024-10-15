@@ -107,6 +107,13 @@ pub(crate) struct TransferRequest {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PairRequest {
+    pub(crate) room_code: String,
+    pub(crate) screen_code: String,
+}
+
+#[derive(Debug, Deserialize, Clone, schemars::JsonSchema)]
 pub struct PollQuery {
     pub since: Option<u64>,
     pub timeout: Option<u64>,
@@ -137,6 +144,7 @@ pub(crate) struct GameClientRoom {
     pub(crate) completed: Option<CompletedGame>,
     pub(crate) ticker: Option<String>,
     pub(crate) room_code: Option<String>,
+    pub(crate) pair_screen_code: Option<String>,
     pub(crate) last_update: u64,
 }
 

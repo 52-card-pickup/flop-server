@@ -17,6 +17,7 @@ pub type RoomState = Arc<RwLock<State>>;
 pub struct SharedState {
     states: Arc<std::sync::RwLock<HashMap<room::RoomCode, RoomState>>>,
     registry: Arc<RwLock<room::RoomRegistry>>,
+    big_screens: Arc<RwLock<screens::BigScreenRegistry>>,
     default_config: Arc<std::sync::RwLock<Option<config::RoomConfig>>>,
 }
 
@@ -147,6 +148,52 @@ impl SharedState {
                 }
             }
         }
+
+        let mut big_screens = self.big_screens.write().await;
+        big_screens.cleanup();
+    }
+
+    pub async fn register_big_screen(&self, apid: &str) -> Option<screens::PairScreenCode> {
+        let mut big_screens = self.big_screens.write().await;
+        if let Some(_) = big_screens.get_code_by_apid(apid) {
+            return None;
+        } else {
+            Some(big_screens.add(apid))
+        }
+    }
+
+    pub async fn get_big_screen_by_code(
+        &self,
+        code: &screens::PairScreenCode,
+    ) -> Option<screens::Screen> {
+        let big_screens = self.big_screens.read().await;
+        big_screens.get(code).cloned()
+    }
+
+    pub async fn get_big_screen_by_apid(
+        &self,
+        apid: &str,
+    ) -> Option<(screens::PairScreenCode, screens::Screen)> {
+        let big_screens = self.big_screens.read().await;
+        let code = big_screens.get_code_by_apid(apid)?;
+        let screen = big_screens.get(code).cloned()?;
+        Some((code.clone(), screen))
+    }
+
+    pub async fn pair_screen_with_room(
+        &self,
+        code: &screens::PairScreenCode,
+        room_code: &room::RoomCode,
+    ) -> Result<(), ()> {
+        self.get_room(room_code).await.ok_or(())?;
+
+        let mut big_screens = self.big_screens.write().await;
+        let screen = big_screens.get_mut(code).ok_or(())?;
+
+        screen.room_code = Some(room_code.clone());
+        screen.last_update.set_now();
+
+        Ok(())
     }
 
     pub fn set_default_config(&self, config: config::RoomConfig) {
@@ -292,6 +339,117 @@ pub mod room {
     }
 }
 
+pub mod screens {
+    use std::{collections::HashMap, str::FromStr};
+
+    use rand::Rng;
+
+    use super::{dt, room, PAIR_SCREEN_CODE_LENGTH};
+
+    #[derive(Default)]
+    pub struct BigScreenRegistry {
+        screens: HashMap<PairScreenCode, Screen>,
+    }
+
+    impl BigScreenRegistry {
+        pub fn add(&mut self, apid: &str) -> PairScreenCode {
+            let code = PairScreenCode::default();
+            let screen = Screen {
+                apid: apid.to_string(),
+                room_code: None,
+                last_update: dt::SignalInstant::default(),
+            };
+            self.screens.insert(code.clone(), screen);
+            code
+        }
+
+        pub fn get(&self, code: &PairScreenCode) -> Option<&Screen> {
+            self.screens.get(code)
+        }
+
+        pub fn get_mut(&mut self, code: &PairScreenCode) -> Option<&mut Screen> {
+            self.screens.get_mut(code)
+        }
+
+        pub fn get_code_by_apid(&self, apid: &str) -> Option<&PairScreenCode> {
+            self.screens
+                .iter()
+                .find_map(|(code, screen)| (screen.apid == apid).then(|| code))
+        }
+
+        pub fn remove(&mut self, code: &PairScreenCode) -> Option<Screen> {
+            self.screens.remove(code)
+        }
+
+        pub fn cleanup(&mut self) {
+            let now = dt::Instant::default().as_u64();
+            let mut to_remove = Vec::new();
+
+            for (code, screen) in self.screens.iter() {
+                let last_update = screen.last_update.as_u64();
+                let screen_expires_at = last_update + 300_000;
+
+                if screen_expires_at < now {
+                    to_remove.push(code.clone());
+                }
+            }
+
+            for code in to_remove {
+                let mut screen = self.screens.remove(&code).expect("screen should exist");
+                screen.last_update.set_now();
+            }
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct Screen {
+        pub apid: String,
+        pub room_code: Option<room::RoomCode>,
+        pub last_update: dt::SignalInstant,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    pub struct PairScreenCode(String);
+
+    impl ToString for PairScreenCode {
+        #[inline]
+        fn to_string(&self) -> String {
+            <String as ToString>::to_string(&self.0)
+        }
+    }
+
+    impl FromStr for PairScreenCode {
+        type Err = ();
+
+        fn from_str(s: &str) -> Result<Self, Self::Err> {
+            let char_count = s.chars().count();
+            if char_count != PAIR_SCREEN_CODE_LENGTH {
+                return Err(());
+            }
+            if !s.chars().all(|c| c.is_digit(10)) {
+                return Err(());
+            }
+
+            Ok(Self(s.to_ascii_uppercase()))
+        }
+    }
+
+    impl Default for PairScreenCode {
+        fn default() -> Self {
+            let mut rng = rand::thread_rng();
+            let digits = "0123456789".as_bytes();
+            let code: String = (0..PAIR_SCREEN_CODE_LENGTH)
+                .map(|_| {
+                    let idx = rng.gen_range(0..digits.len());
+                    digits[idx] as char
+                })
+                .collect();
+
+            Self(code)
+        }
+    }
+}
+
 pub const STARTING_BALANCE: u64 = 1000;
 pub const SMALL_BLIND: u64 = 10;
 pub const BIG_BLIND: u64 = SMALL_BLIND * 2;
@@ -301,6 +459,7 @@ pub const TICKER_ITEM_GAP_MILLISECONDS: u64 = 500;
 pub const PLAYER_TURN_TIMEOUT_SECONDS: u64 = 60;
 pub const GAME_IDLE_TIMEOUT_SECONDS: u64 = 300;
 pub const ROOM_CODE_LENGTH: usize = 4;
+pub const PAIR_SCREEN_CODE_LENGTH: usize = 6;
 pub const MAX_PLAYERS: usize = 10;
 
 #[derive(Debug, Default)]
