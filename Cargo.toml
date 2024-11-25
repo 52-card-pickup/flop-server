@@ -32,3 +32,6 @@ uuid = { version = "1.7.0", features = ["v4"] }
 [dev-dependencies]
 axum-test = "15.7.1"
 serde_json = "1.0.128"
+
+[build-dependencies]
+vergen = { version = "8.1", features = ["git", "gitcl"] }
