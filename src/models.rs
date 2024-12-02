@@ -113,6 +113,12 @@ pub(crate) struct PairRequest {
     pub(crate) screen_code: String,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AuthSpotifyRequest {
+    pub(crate) code: String,
+}
+
 #[derive(Debug, Deserialize, Clone, schemars::JsonSchema)]
 pub struct PollQuery {
     pub since: Option<u64>,
@@ -132,6 +138,7 @@ pub(crate) struct GamePlayerState {
     pub(crate) turn_expires_dt: Option<u64>,
     pub(crate) last_update: u64,
     pub(crate) current_round_stake: u64,
+    pub(crate) spotify_player_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -146,6 +153,7 @@ pub(crate) struct GameClientRoom {
     pub(crate) room_code: Option<String>,
     pub(crate) pair_screen_code: Option<String>,
     pub(crate) last_update: u64,
+    pub(crate) spotify_access_token: Option<String>,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]

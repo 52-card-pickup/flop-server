@@ -8,6 +8,7 @@ use tokio::sync::RwLock;
 
 pub use id::PlayerId;
 pub use ticker::TickerEvent;
+use tracing::info;
 
 use self::players::Players;
 
@@ -193,6 +194,49 @@ impl SharedState {
         screen.room_code = Some(room_code.clone());
         screen.last_update.set_now();
 
+        Ok(())
+    }
+
+    pub async fn add_spotify_auth_token_for_room(
+        &self,
+        code: &str,
+        player_id: &PlayerId,
+    ) -> Result<(), ()> {
+        let state = self.get(player_id).await.ok_or(())?;
+        let mut state = state.write().await;
+
+        if state.spotify.is_some() {
+            return Err(());
+        }
+        info!("Getting Spotify access token for room");
+        let spotify_response = spotify::get_access_token(code).await.or(Err(()))?;
+
+        let expires_at = Instant::from(spotify_response.expires_in + Instant::default().as_u64());
+
+        let spotify = SpotifyAuthToken {
+            access_token: spotify_response.access_token,
+            expires_at: expires_at,
+            player_id: player_id.clone(),
+        };
+
+        state.spotify = Some(spotify);
+        info!("Successfully added Spotify access token for room");
+        state
+            .ticker
+            .emit(TickerEvent::PlayerConnectedSpotify((player_id.clone())));
+
+        Ok(())
+    }
+
+    pub async fn logout_spotify(&self, player_id: &PlayerId) -> Result<(), ()> {
+        let state = self.get(player_id).await.ok_or(())?;
+        let mut state = state.write().await;
+
+        if state.spotify.is_none() {
+            return Err(());
+        }
+
+        state.spotify = None;
         Ok(())
     }
 
@@ -471,6 +515,14 @@ pub struct State {
     pub status: GameStatus,
     pub config: config::RoomConfig,
     pub disposed: bool,
+    pub spotify: Option<SpotifyAuthToken>,
+}
+
+#[derive(Debug, Default)]
+pub struct SpotifyAuthToken {
+    pub access_token: String,
+    pub expires_at: dt::Instant,
+    pub player_id: PlayerId,
 }
 
 #[derive(Debug, Default)]
@@ -771,6 +823,7 @@ pub mod ticker {
         PlayerPhotoUploaded(PlayerId),
         PlayerSentEmoji(PlayerId, emoji::TickerEmoji),
         PlayerTransferredBalance(PlayerId, PlayerId, u64),
+        PlayerConnectedSpotify(PlayerId),
     }
 
     impl TickerEvent {
@@ -872,6 +925,9 @@ pub mod ticker {
                         .map(|p| p.name.as_str())
                         .unwrap_or_default();
                     format!("Player {} transferred £{} to {}", from, amount, to)
+                }
+                Self::PlayerConnectedSpotify(player_id) => {
+                    format_player_action(state, player_id, "connected Spotify")
                 }
             }
         }
@@ -1173,6 +1229,56 @@ mod players {
             self.0
                 .iter()
                 .find_map(|(_, p)| if p.apid == apid { Some(p) } else { None })
+        }
+    }
+}
+
+pub mod spotify {
+    use aide::error;
+    use reqwest::Client;
+    use serde::{Deserialize, Serialize};
+    use std::env;
+    use tracing::info;
+
+    #[derive(Serialize, Deserialize, Debug)]
+    pub struct TokenResponse {
+        pub access_token: String,
+        token_type: String,
+        pub expires_in: u64,
+        refresh_token: Option<String>,
+        scope: String,
+    }
+
+    pub async fn get_access_token(code: &str) -> Result<TokenResponse, Box<dyn std::error::Error>> {
+        let client_id = env::var("SPOTIFY_CLIENT_ID").expect("Missing SPOTIFY_CLIENT_ID");
+        let client_secret =
+            env::var("SPOTIFY_CLIENT_SECRET").expect("Missing SPOTIFY_CLIENT_SECRET");
+        let redirect_uri = "http://0.0.0.0:8080/spotifyredirect";
+
+        let credentials = base64::encode(format!("{}:{}", client_id, client_secret));
+
+        let client = Client::new();
+
+        let params = [
+            ("grant_type", "authorization_code"),
+            ("code", code),
+            ("redirect_uri", redirect_uri),
+        ];
+        info!("Fetching Spotify token");
+        let res = client
+            .post("https://accounts.spotify.com/api/token")
+            .header("Authorization", format!("Basic {}", credentials))
+            .form(&params)
+            .send()
+            .await?;
+
+        if res.status().is_success() {
+            info!("Spotify token fetched successfully");
+            let token_response: TokenResponse = res.json().await?;
+            Ok(token_response)
+        } else {
+            let error_message = format!("Error fetching token: {:?}", res.text().await?);
+            Err(Box::from(error_message))
         }
     }
 }

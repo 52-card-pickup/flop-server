@@ -1,4 +1,7 @@
-use std::sync::{Arc, OnceLock};
+use std::{
+    str::FromStr,
+    sync::{Arc, OnceLock},
+};
 
 use crate::{
     app_metrics::{metrics_labels, Metrics},
@@ -29,6 +32,14 @@ pub(crate) fn api_routes(state: state::SharedState) -> ApiRouter {
         .api_route("/room/close", post_with(close_room, docs::close_room))
         .api_route("/room/reset", post_with(reset_room, docs::reset_room))
         .api_route("/pair", post_with(pair, docs::pair))
+        .api_route(
+            "/player/:player_id/authspotify",
+            post_with(auth_spotify, docs::auth_spotify),
+        )
+        .api_route(
+            "/player/:player_id/logoutspotify",
+            post_with(logout_spotify, docs::logout_spotify),
+        )
         .api_route("/player/:player_id", get_with(player, docs::player))
         .api_route(
             "/player/:player_id/leave",
@@ -95,6 +106,14 @@ pub(crate) async fn room(
         _ => (room_code, None),
     };
 
+    let spotify_access_token = state.spotify.as_ref();
+
+    let mut sat: Option<String> = None;
+
+    if let Some(spotify_access_token) = spotify_access_token {
+        sat = Some(spotify_access_token.player_id.to_string());
+    }
+
     let game_client_state = models::GameClientRoom {
         state: game::game_phase(&state),
         players: game::room_players(&state),
@@ -105,6 +124,7 @@ pub(crate) async fn room(
         room_code: room_code.map(|r| r.to_string()),
         pair_screen_code: pair_screen_code.map(|c| c.to_string()),
         last_update: state.last_update.as_u64(),
+        spotify_access_token: sat,
     };
 
     Ok(Json(game_client_state))
@@ -120,6 +140,7 @@ pub(crate) async fn player(
 
     let state = state.get(&player.id).await.ok_or(StatusCode::NOT_FOUND)?;
     let state = state.read().await;
+    let spotify_player_id = state.spotify.as_ref().map(|s| s.player_id.to_string());
 
     let game_player_state = models::GamePlayerState {
         state: game::game_phase(&state),
@@ -132,6 +153,7 @@ pub(crate) async fn player(
         turn_expires_dt: game::turn_expires_dt(&state, &player.id),
         last_update: state.last_update.as_u64(),
         current_round_stake: game::player_stake_in_round(&state, &player.id),
+        spotify_player_id: spotify_player_id,
     };
 
     Ok(Json(game_player_state))
@@ -644,6 +666,48 @@ pub(crate) async fn pair(
     Ok(Json(()))
 }
 
+#[autometrics(ok_if = metrics::is_success)]
+pub(crate) async fn auth_spotify(
+    State(state): State<SharedState>,
+    Path(player_id): Path<String>,
+    Json(payload): Json<models::AuthSpotifyRequest>,
+) -> JsonResult<()> {
+    let player = utils::validate_player(&player_id, &state).await?;
+
+    let code: String = payload.code.clone().parse().map_err(|_| {
+        info!(
+            "Failed to pair big screen: invalid screen code '{}'",
+            payload.code
+        );
+        StatusCode::BAD_REQUEST
+    })?;
+
+    state
+        .add_spotify_auth_token_for_room(&code, &player.id)
+        .await
+        .map_err(|_| {
+            info!("Failed to connect to spotify: {}", player_id);
+            StatusCode::NOT_FOUND
+        })?;
+
+    Ok(Json(()))
+}
+
+#[autometrics(ok_if = metrics::is_success)]
+pub(crate) async fn logout_spotify(
+    State(state): State<SharedState>,
+    Path(player_id): Path<String>,
+) -> JsonResult<()> {
+    let player = utils::validate_player(&player_id, &state).await?;
+
+    state.logout_spotify(&player.id).await.map_err(|_| {
+        info!("Failed to disconnect from spotify: {}", player_id);
+        StatusCode::NOT_FOUND
+    })?;
+
+    Ok(Json(()))
+}
+
 mod utils {
     use autometrics::autometrics;
     use axum::http::StatusCode;
@@ -865,6 +929,14 @@ pub mod docs {
 
     pub fn play(op: TransformOperation) -> TransformOperation {
         op.description("Play a round.")
+    }
+
+    pub fn auth_spotify(op: TransformOperation) -> TransformOperation {
+        op.description("Authorize player's Spotify to play on the bigscreen.")
+    }
+
+    pub fn logout_spotify(op: TransformOperation) -> TransformOperation {
+        op.description("Clear spotify credentials from the server and bigscreen.")
     }
 
     pub fn new_room(op: TransformOperation) -> TransformOperation {
