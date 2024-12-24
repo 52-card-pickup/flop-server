@@ -46,6 +46,9 @@ impl Deck {
     pub fn is_fresh(&self) -> bool {
         self.0.len() == 52
     }
+    pub fn from_vec(cards: Vec<Card>) -> Self {
+        Self(cards)
+    }
 }
 
 impl Default for Deck {
@@ -54,6 +57,12 @@ impl Default for Deck {
         let mut rng = rand::thread_rng();
         deck.shuffle(&mut rng);
         Self(deck)
+    }
+}
+
+impl From<Vec<Card>> for Deck {
+    fn from(cards: Vec<Card>) -> Self {
+        Self::from_vec(cards)
     }
 }
 
