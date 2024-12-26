@@ -66,7 +66,7 @@ impl From<Vec<Card>> for Deck {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Card {
     pub suite: CardSuite,
     pub value: CardValue,
