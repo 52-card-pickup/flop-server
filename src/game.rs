@@ -1255,17 +1255,19 @@ mod tests {
 
     #[test]
     fn game_pays_outright_winner_from_pot() {
+        use fixtures::builder::GameBuilder;
+
         let mut state = state::State::default();
         state.config = state.config.with_card_deal_disabled();
         state.round.deck = cards::Deck::ordered();
 
         let state = &mut state;
 
-        let player_1 = fixtures::add_player(state, "player_1").unwrap();
-        let player_2 = fixtures::add_player(state, "player_2").unwrap();
-        let player_3 = fixtures::add_player(state, "player_3").unwrap();
-        let player_4 = fixtures::add_player(state, "player_4").unwrap();
-        let player_5 = fixtures::add_player(state, "player_5").unwrap();
+        let player_1 = GameBuilder::add_player(state, "player_1");
+        let player_2 = GameBuilder::add_player(state, "player_2");
+        let player_3 = GameBuilder::add_player(state, "player_3");
+        let player_4 = GameBuilder::add_player(state, "player_4");
+        let player_5 = GameBuilder::add_player(state, "player_5");
 
         assert_eq!(state.players.len(), 5);
         assert_eq!(state.status, state::GameStatus::Joining);
@@ -1713,7 +1715,14 @@ mod tests {
 
     #[test]
     fn five_player_game_completes() {
-        let (state, _) = fixtures::start_n_player_game(5, GameFixture::Complete);
+        let (state, player_ids) = fixtures::builder::GameBuilder::new()
+            .num_players(5)
+            .winner(1)
+            .fixture(GameFixture::Complete)
+            .build()
+            .as_tuple();
+
+        fixtures::debug::print_cards(&state, &player_ids);
 
         assert_eq!(state.status, state::GameStatus::Complete);
     }
@@ -1724,7 +1733,6 @@ mod tests {
         pub mod builder {
             use super::*;
 
-            // TODO: add builder for n player game, with options to pick player to win, starting balance, etc
             pub struct GameBuilder {
                 num_players: usize,
                 winner_idx: Option<usize>,
@@ -1777,7 +1785,7 @@ mod tests {
 
                     // Create players
                     for i in 0..self.num_players {
-                        let player = add_player(&mut state, &format!("player_{}", i + 1)).unwrap();
+                        let player = Self::add_player(&mut state, &format!("player_{}", i + 1));
 
                         // Set custom balance if specified
                         if let Some(balance) = self.starting_balances.get(i).cloned().flatten() {
@@ -1795,13 +1803,18 @@ mod tests {
 
                     start_game(&mut state).unwrap();
 
-                    progress_n_player_game(&mut state, self.fixture);
+                    Self::progress_n_player_game(&mut state, self.fixture);
 
                     GameBuilderResult {
                         state: Some(state),
                         player_ids,
                         builder: self,
                     }
+                }
+
+                pub fn add_player(state: &mut state::State, player_name: &str) -> state::PlayerId {
+                    let player_id = state::PlayerId::default();
+                    add_new_player(state, player_name, player_id).unwrap()
                 }
 
                 fn rig_winner_in_deck(state: &mut state::State, winner_idx: Option<usize>) {
@@ -1859,7 +1872,7 @@ mod tests {
                         }
                     }
 
-                    // Add community cards to complete royal flush for winner
+                    // Add community cards to complete royal flush for winner, but not much for others
                     deck.push(cards::Card {
                         suite: cards::CardSuite::Hearts,
                         value: cards::CardValue::Queen,
@@ -1873,19 +1886,19 @@ mod tests {
                         value: cards::CardValue::Ten,
                     });
                     deck.push(cards::Card {
-                        suite: cards::CardSuite::Hearts,
-                        value: cards::CardValue::Nine,
+                        suite: cards::CardSuite::Spades,
+                        value: VALUES[0],
                     });
                     deck.push(cards::Card {
                         suite: cards::CardSuite::Hearts,
-                        value: cards::CardValue::Eight,
+                        value: cards::CardValue::Two,
                     });
 
                     // Fill rest of deck with some extra spades
-                    for value in VALUES {
+                    for value in VALUES.iter().skip(1) {
                         deck.push(cards::Card {
                             suite: cards::CardSuite::Spades,
-                            value,
+                            value: *value,
                         });
                     }
 
@@ -1898,6 +1911,66 @@ mod tests {
                         let player = state.players.get_mut(player_id).unwrap();
                         player.cards = (state.round.deck.pop(), state.round.deck.pop());
                     }
+                }
+
+                fn progress_n_player_game(state: &mut state::State, game_fixture: GameFixture) {
+                    assert!(state.status == state::GameStatus::Playing);
+                    assert_eq!(cards_on_table(&state).len(), 0);
+                    if game_fixture == GameFixture::Round1 {
+                        return;
+                    }
+                    let len = state.players.len();
+
+                    let get_players = move |state: &state::State| {
+                        let active_player = state.round.players_turn.as_ref().unwrap();
+                        state
+                            .players
+                            .keys()
+                            .cycle()
+                            .skip_while(|p| *p != active_player)
+                            .take(state.players.len())
+                            .cloned()
+                            .collect::<Vec<_>>()
+                    };
+
+                    // First round of betting
+                    assert_eq!(state.round.pot, 30);
+                    for (i, player) in get_players(state).iter().enumerate() {
+                        let last = i == len - 1;
+                        if last {
+                            accept_player_bet(state, player, P::Check).unwrap();
+                        } else {
+                            accept_player_bet(state, player, P::Call).unwrap();
+                        }
+                    }
+                    assert_eq!(cards_on_table(&state).len(), 3);
+                    if game_fixture == GameFixture::Round2 {
+                        return;
+                    }
+
+                    // Second round
+                    for player in get_players(state) {
+                        accept_player_bet(state, &player, P::Check).unwrap();
+                    }
+                    assert_eq!(cards_on_table(&state).len(), 4);
+                    if game_fixture == GameFixture::Round3 {
+                        return;
+                    }
+
+                    // Third round
+                    for player in get_players(state) {
+                        accept_player_bet(state, &player, P::Check).unwrap();
+                    }
+                    assert_eq!(cards_on_table(&state).len(), 5);
+                    if game_fixture == GameFixture::Round4 {
+                        return;
+                    }
+
+                    // Final round
+                    for player in get_players(state) {
+                        accept_player_bet(state, &player, P::Check).unwrap();
+                    }
+                    assert_eq!(state.status, state::GameStatus::Complete);
                 }
             }
 
@@ -1998,13 +2071,70 @@ mod tests {
                     assert_eq!(state.players.get(&players[2]).unwrap().balance, 300);
                     assert_eq!(state.players.get(&players[3]).unwrap().balance, 400);
                 }
+
+                #[test]
+                fn no_duplicate_cards_in_large_game() {
+                    fn check_no_duplicate_cards(
+                        game: &(state::State, Vec<state::PlayerId>),
+                        num_players: usize,
+                    ) {
+                        let (state, players) = game;
+                        let mut all_cards = Vec::new();
+
+                        // Collect player cards
+                        for player_id in players.iter() {
+                            let player = state.players.get(player_id).unwrap();
+                            let (card1, card2) = player.cards;
+                            all_cards.push(card1);
+                            all_cards.push(card2);
+                        }
+
+                        // Collect community cards
+                        all_cards.extend(state.round.cards_on_table.iter());
+
+                        debug::print_cards(&state, &players);
+
+                        // Check total number of cards
+                        assert_eq!(all_cards.len(), (num_players * 2) + 5);
+
+                        // Check for duplicates by comparing each card with every other card
+                        for i in 0..all_cards.len() {
+                            for j in (i + 1)..all_cards.len() {
+                                assert_ne!(
+                                    all_cards[i], all_cards[j],
+                                    "Found duplicate card: {:?}",
+                                    all_cards[i]
+                                );
+                            }
+                        }
+                    }
+
+                    let num_players = 6;
+
+                    let without_winner_set = GameBuilder::new()
+                        .num_players(num_players)
+                        .fixture(GameFixture::Round4) // Get all 5 community cards dealt
+                        .build();
+
+                    println!("Without winner set");
+                    check_no_duplicate_cards(&without_winner_set.as_tuple(), num_players);
+
+                    let with_winner_set = GameBuilder::new()
+                        .num_players(num_players)
+                        .winner(1)
+                        .fixture(GameFixture::Round4) // Get all 5 community cards dealt
+                        .build();
+
+                    println!("With winner set");
+                    check_no_duplicate_cards(&with_winner_set.as_tuple(), num_players);
+                }
             }
         }
 
         pub mod debug {
             use super::*;
 
-            pub fn print_cards(state: &state::State) {
+            pub fn print_cards(state: &state::State, player_ids: &[state::PlayerId]) {
                 let fmt = |card: cards::Card| match card.suite {
                     cards::CardSuite::Hearts => format!("{:?}H", card.value),
                     cards::CardSuite::Diamonds => format!("{:?}D", card.value),
@@ -2016,7 +2146,8 @@ mod tests {
                 println!("+-----------+------------------+");
                 println!("| Player    | Cards            |");
                 println!("+-----------+------------------+");
-                for (i, (id, player)) in state.players.iter().enumerate() {
+                for (i, id) in player_ids.iter().enumerate() {
+                    let player = state.players.get(id).unwrap();
                     let (card1, card2) = player.cards;
                     println!(
                         "| {:<9} | {:>7}, {:>7} |",
@@ -2063,90 +2194,6 @@ mod tests {
             Complete,
         }
 
-        pub fn start_n_player_game(
-            n: usize,
-            game_fixture: GameFixture,
-        ) -> (state::State, Vec<state::PlayerId>) {
-            let mut state = state::State::default();
-            let mut player_ids = Vec::with_capacity(n);
-
-            for i in 0..n {
-                let player = add_player(&mut state, &format!("player_{}", i + 1)).unwrap();
-                player_ids.push(player);
-            }
-
-            assert_eq!(state.players.len(), n);
-            assert_eq!(state.status, state::GameStatus::Joining);
-            let starting_balance = state.players.iter().map(|(_, p)| p.balance).next().unwrap();
-            assert_eq!(starting_balance, STARTING_BALANCE);
-
-            start_game(&mut state).unwrap();
-
-            progress_n_player_game(&mut state, game_fixture);
-
-            (state, player_ids)
-        }
-
-        pub fn progress_n_player_game(state: &mut state::State, game_fixture: GameFixture) {
-            assert!(state.status == state::GameStatus::Playing);
-            assert_eq!(cards_on_table(&state).len(), 0);
-            if game_fixture == GameFixture::Round1 {
-                return;
-            }
-            let len = state.players.len();
-
-            let get_players = move |state: &state::State| {
-                let active_player = state.round.players_turn.as_ref().unwrap();
-                state
-                    .players
-                    .keys()
-                    .cycle()
-                    .skip_while(|p| *p != active_player)
-                    .take(state.players.len())
-                    .cloned()
-                    .collect::<Vec<_>>()
-            };
-
-            // First round of betting
-            assert_eq!(state.round.pot, 30);
-            for (i, player) in get_players(state).iter().enumerate() {
-                let last = i == len - 1;
-                if last {
-                    accept_player_bet(state, player, P::Check).unwrap();
-                } else {
-                    accept_player_bet(state, player, P::Call).unwrap();
-                }
-            }
-            assert_eq!(cards_on_table(&state).len(), 3);
-            if game_fixture == GameFixture::Round2 {
-                return;
-            }
-
-            // Second round
-            for player in get_players(state) {
-                accept_player_bet(state, &player, P::Check).unwrap();
-            }
-            assert_eq!(cards_on_table(&state).len(), 4);
-            if game_fixture == GameFixture::Round3 {
-                return;
-            }
-
-            // Third round
-            for player in get_players(state) {
-                accept_player_bet(state, &player, P::Check).unwrap();
-            }
-            assert_eq!(cards_on_table(&state).len(), 5);
-            if game_fixture == GameFixture::Round4 {
-                return;
-            }
-
-            // Final round
-            for player in get_players(state) {
-                accept_player_bet(state, &player, P::Check).unwrap();
-            }
-            assert_eq!(state.status, state::GameStatus::Complete);
-        }
-
         pub fn start_two_player_game(
             game_fixture: GameFixture,
         ) -> (state::State, (state::PlayerId, state::PlayerId)) {
@@ -2168,39 +2215,6 @@ mod tests {
                 .fixture(GameFixture::Round1)
                 .build()
                 .as_three_player_game()
-        }
-
-        pub fn deal_biased_deck(
-            state: &mut state::State,
-            player_1: &state::PlayerId,
-            player_2: &state::PlayerId,
-            player_1_loses: bool,
-        ) {
-            let mut deck = cards::Deck::ordered();
-            let (loser, winner) = if player_1_loses {
-                (player_1, player_2)
-            } else {
-                (player_2, player_1)
-            };
-
-            // higher value cards first
-            let winner = state.players.get_mut(winner).unwrap();
-            winner.cards = (deck.pop(), deck.pop());
-            // then lower value cards
-            let loser = state.players.get_mut(loser).unwrap();
-            loser.cards = (deck.pop(), deck.pop());
-
-            // set the round deck
-            state.config = state.config.clone().with_card_deal_disabled();
-            state.round.deck = cards::Deck::ordered();
-        }
-
-        pub fn add_player(
-            state: &mut state::State,
-            player_name: &str,
-        ) -> Result<state::PlayerId, String> {
-            let player_id = state::PlayerId::default();
-            super::add_new_player(state, player_name, player_id)
         }
     }
 }
