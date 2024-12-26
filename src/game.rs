@@ -336,37 +336,98 @@ pub fn player_stake_in_round(state: &state::State, player_id: &state::PlayerId) 
     player_stake_in_current_round
 }
 
-fn accept_blinds(
-    state: &mut state::State,
-    small_blind_player: state::PlayerId,
-    big_blind_player: state::PlayerId,
-) {
+fn accept_blinds(state: &mut state::State) -> Option<state::PlayerId> {
+    let small_blind_stake = state.config.small_blind();
+    let big_blind_stake = state.config.big_blind();
+
+    let mut small_blind_player_id = None;
+    let mut big_blind_player_id = None;
+
+    for player in state.players.values_mut() {
+        let player_id = player.id.clone();
+        if small_blind_player_id.is_none() {
+            if player.balance < state.config.small_blind() {
+                player.folded = true;
+                state
+                    .ticker
+                    .emit(TickerEvent::PlayerFolded(player_id.clone()));
+
+                continue;
+            }
+
+            small_blind_player_id = Some(player_id);
+            continue;
+        }
+        if big_blind_player_id.is_none() {
+            if player.balance < state.config.big_blind() {
+                player.folded = true;
+                state
+                    .ticker
+                    .emit(TickerEvent::PlayerFolded(player_id.clone()));
+
+                continue;
+            }
+
+            big_blind_player_id = Some(player_id);
+            break;
+        }
+    }
+
+    let Some(small_blind_player_id) = small_blind_player_id else {
+        info!("No players left to accept blinds while collecting small blind, cancelling round");
+        return None;
+    };
+
+    let Some(big_blind_player_id) = big_blind_player_id else {
+        info!("No players left to accept blinds while collecting big blind, cancelling round");
+        return None;
+    };
+
+    let next_player_id = state
+        .players
+        .keys()
+        .cycle()
+        .skip_while(|p| **p != big_blind_player_id)
+        .nth(1)
+        .cloned();
+
+    info!(
+        "Accepting blinds from players {} (sm) and {} (lg)",
+        small_blind_player_id, big_blind_player_id
+    );
+
     let small_blind_player = state
         .players
-        .get_mut(&small_blind_player)
+        .get_mut(&small_blind_player_id)
         .expect("Small blind player not found");
-    let small_blind_stake = small_blind_player.balance.min(state.config.small_blind());
-    small_blind_player.balance = small_blind_player.balance - small_blind_stake;
+
+    small_blind_player.balance = small_blind_player
+        .balance
+        .checked_sub(small_blind_stake)
+        .expect("Not enough balance to cover small blind");
+
     small_blind_player.stake += small_blind_stake;
     state.round.pot += small_blind_stake;
-
-    state
-        .ticker
-        .emit(TickerEvent::SmallBlindPosted(small_blind_player.id.clone()));
 
     state
         .round
         .raises
         .push((small_blind_player.id.clone(), small_blind_stake));
 
+    state
+        .ticker
+        .emit(TickerEvent::SmallBlindPosted(small_blind_player.id.clone()));
+
     let big_blind_player = state
         .players
-        .get_mut(&big_blind_player)
+        .get_mut(&big_blind_player_id)
         .expect("Big blind player not found");
 
-    let big_blind_stake = big_blind_player.balance.min(state.config.big_blind());
+    big_blind_player.balance = big_blind_player
+        .balance
+        .checked_sub(big_blind_stake)
+        .expect("Not enough balance to cover big blind");
 
-    big_blind_player.balance = big_blind_player.balance - big_blind_stake;
     big_blind_player.stake += big_blind_stake;
     state.round.pot += big_blind_stake;
 
@@ -378,6 +439,8 @@ fn accept_blinds(
     state
         .ticker
         .emit(TickerEvent::BigBlindPosted(big_blind_player.id.clone()));
+
+    next_player_id
 }
 
 fn reset_players(state: &mut state::State) {
@@ -398,22 +461,7 @@ fn next_turn(state: &mut state::State, current_player_id: Option<&state::PlayerI
     let next_player_id = match current_player_id {
         Some(player_id) => get_next_players_turn(&state, player_id),
         None if state.round.cards_on_table.is_empty() => {
-            let mut player_ids = state
-                .players
-                .iter()
-                .filter(|(_, p)| !p.folded)
-                .map(|(id, _)| id.clone())
-                .cycle();
-            let small_blind_player = player_ids.next().expect("No players left");
-            let big_blind_player = player_ids.next().expect("No players left");
-            let next_player_id = player_ids.next();
-
-            info!(
-                "Accepting blinds from players {} (sm) and {} (lg)",
-                small_blind_player, big_blind_player
-            );
-            accept_blinds(state, small_blind_player, big_blind_player);
-
+            let next_player_id = accept_blinds(state);
             next_player_id
         }
         None => get_rounds_starting_player(state),
