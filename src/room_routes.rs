@@ -18,7 +18,7 @@ async fn available(
     State(states): State<Arc<Vec<state::SharedState>>>,
 ) -> axum::Json<Option<models::RoomAvailable>> {
     for (idx, state) in states.iter().enumerate() {
-        let Ok(state) = state.read() else { continue };
+        let state = state.read().await;
         if state.last_update.triggered() {
             continue;
         }
@@ -38,7 +38,7 @@ async fn find(
     State(states): State<Arc<Vec<state::SharedState>>>,
 ) -> Result<axum::Json<models::RoomAvailable>, axum::http::StatusCode> {
     for (idx, state) in states.iter().enumerate() {
-        let Ok(state) = state.read() else { continue };
+        let state = state.read().await;
         match join_code.as_str().try_into() {
             Ok(join_code) if state.join_code == join_code => {
                 let available = models::RoomAvailable {

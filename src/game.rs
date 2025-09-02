@@ -36,7 +36,9 @@ pub(crate) fn spawn_game_worker(state: state::SharedState) {
             }
 
             let mut state = state.write().await;
-            if !state.round.deck.is_fresh() || state.status == state::GameStatus::Complete {
+            if state.round.deck.len() != state.round.deck.full_len()
+                || state.status == state::GameStatus::Complete
+            {
                 info!("Game idle timeout, resetting game");
                 *state = state::State::default();
             }

@@ -237,23 +237,31 @@ pub mod dt {
         use std::future::Future;
         use std::sync::{Arc, Mutex};
 
-        use tokio::sync::oneshot::{self, Sender};
+        use tokio::sync::oneshot;
 
         use super::Instant;
 
         #[derive(Clone, Default)]
-        pub struct SignalInstant(Instant, Arc<Mutex<Vec<oneshot::Sender<Instant>>>>);
+        pub struct SignalInstant {
+            inner: Instant,
+            senders: Arc<Mutex<Vec<oneshot::Sender<Instant>>>>,
+            triggered: bool,
+        }
 
         impl SignalInstant {
             pub fn as_u64(&self) -> u64 {
-                self.inner.into()
+                self.inner.as_u64()
+            }
+
+            pub fn triggered(&self) -> bool {
+                self.triggered
             }
 
             pub fn set_now(&mut self) {
-                self.0.set_now();
-                let mut senders = self.1.lock().unwrap();
+                self.inner.set_now();
+                let mut senders = self.senders.lock().unwrap();
                 for sender in senders.drain(..) {
-                    let _ = sender.send(self.0);
+                    let _ = sender.send(self.inner);
                 }
             }
 
@@ -262,7 +270,7 @@ pub mod dt {
                     Some(receiver) => receiver,
                     None => {
                         let (sender, receiver) = oneshot::channel();
-                        sender.send(self.0).unwrap();
+                        sender.send(self.inner).unwrap();
                         receiver
                     }
                 };
@@ -270,13 +278,13 @@ pub mod dt {
             }
 
             pub fn try_wait_for(&self, since: Instant) -> Option<oneshot::Receiver<Instant>> {
-                let when = self.0;
+                let when = self.inner;
                 if when > since {
                     return None;
                 }
 
                 let (sender, receiver) = oneshot::channel();
-                let mut senders = self.1.lock().unwrap();
+                let mut senders = self.senders.lock().unwrap();
                 senders.push(sender);
                 Some(receiver)
             }
@@ -425,10 +433,6 @@ pub mod ticker {
                         .unwrap_or_default();
                     format!("Player {} transferred £{} to {}", from, amount, to)
                 }
-            }
-
-            pub fn triggered(&self) -> bool {
-                self.triggered
             }
         }
     }

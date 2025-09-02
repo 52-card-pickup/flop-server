@@ -43,6 +43,12 @@ impl Deck {
     pub fn pop(&mut self) -> Card {
         self.0.pop().expect("deck is empty")
     }
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+    pub const fn full_len(&self) -> usize {
+        52
+    }
 }
 
 impl Default for Deck {
