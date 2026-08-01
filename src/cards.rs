@@ -46,6 +46,9 @@ impl Deck {
     pub fn is_fresh(&self) -> bool {
         self.0.len() == 52
     }
+    pub fn from_vec(cards: Vec<Card>) -> Self {
+        Self(cards)
+    }
 }
 
 impl Default for Deck {
@@ -57,7 +60,13 @@ impl Default for Deck {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+impl From<Vec<Card>> for Deck {
+    fn from(cards: Vec<Card>) -> Self {
+        Self::from_vec(cards)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Card {
     pub suite: CardSuite,
     pub value: CardValue,

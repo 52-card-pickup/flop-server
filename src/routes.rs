@@ -1,6 +1,7 @@
 use std::sync::{Arc, OnceLock};
 
 use crate::{
+    app_metrics::{metrics_labels, Metrics},
     game, layer, models,
     state::{self, SharedState},
 };
@@ -9,6 +10,7 @@ use aide::axum::{
     routing::{get_with, post_with},
     ApiRouter,
 };
+use autometrics::autometrics;
 use axum::{
     body,
     extract::{Multipart, Path, Query, State},
@@ -26,6 +28,7 @@ pub(crate) fn api_routes(state: state::SharedState) -> ApiRouter {
         .api_route("/room/peek", post_with(peek_room, docs::peek_room))
         .api_route("/room/close", post_with(close_room, docs::close_room))
         .api_route("/room/reset", post_with(reset_room, docs::reset_room))
+        .api_route("/pair", post_with(pair, docs::pair))
         .api_route("/player/:player_id", get_with(player, docs::player))
         .api_route(
             "/player/:player_id/leave",
@@ -60,14 +63,17 @@ pub(crate) fn api_routes(state: state::SharedState) -> ApiRouter {
         .with_state(state)
 }
 
+#[autometrics(ok_if = metrics::is_success)]
 pub(crate) async fn room(
     State(state): State<SharedState>,
+    Extension(layer::Apid(apid)): Extension<layer::Apid>,
     Query(query): Query<models::PollQuery>,
     room_code: Option<TypedHeader<models::headers::RoomCodeHeader>>,
 ) -> JsonResult<models::GameClientRoom> {
     static EMPTY: OnceLock<state::RoomState> = OnceLock::new();
 
-    let room_code = match utils::wait_by_room_code(&state, query, room_code).await {
+    let shared_state = state.clone();
+    let room_code = match utils::wait_by_room_code(&state, query.clone(), room_code).await {
         Ok(room_code) => Some(room_code),
         Err(StatusCode::NOT_FOUND) => None,
         Err(status) => return Err(status),
@@ -87,6 +93,12 @@ pub(crate) async fn room(
     };
 
     let state = state.read().await;
+    let (room_code, pair_screen_code) = match state.status {
+        state::GameStatus::Idle => utils::wait_by_screen_apid(&shared_state, query, &apid)
+            .await
+            .map(|(room, screen)| (room.or(room_code), Some(screen)))?,
+        _ => (room_code, None),
+    };
 
     let game_client_state = models::GameClientRoom {
         state: game::game_phase(&state),
@@ -96,12 +108,14 @@ pub(crate) async fn room(
         completed: game::completed_game(&state),
         ticker: game::ticker(&state),
         room_code: room_code.map(|r| r.to_string()),
+        pair_screen_code: pair_screen_code.map(|c| c.to_string()),
         last_update: state.last_update.as_u64(),
     };
 
     Ok(Json(game_client_state))
 }
 
+#[autometrics(ok_if = metrics::is_success)]
 pub(crate) async fn player(
     State(state): State<SharedState>,
     Path(player_id): Path<String>,
@@ -130,6 +144,7 @@ pub(crate) async fn player(
     Ok(Json(game_player_state))
 }
 
+#[autometrics(ok_if = metrics::is_success)]
 pub(crate) async fn player_leave(
     State(state): State<SharedState>,
     Path(player_id): Path<String>,
@@ -152,6 +167,7 @@ pub(crate) async fn player_leave(
     Ok(Json(()))
 }
 
+#[autometrics(ok_if = metrics::is_success)]
 pub(crate) async fn player_send(
     State(state): State<SharedState>,
     Path(player_id): Path<String>,
@@ -193,6 +209,7 @@ pub(crate) async fn player_send(
     Ok(Json(()))
 }
 
+#[autometrics(ok_if = metrics::is_success)]
 pub(crate) async fn get_player_transfer(
     State(state): State<SharedState>,
     Path(player_id): Path<String>,
@@ -214,6 +231,7 @@ pub(crate) async fn get_player_transfer(
     Ok(Json(models::PlayerAccountsResponse { accounts }))
 }
 
+#[autometrics(ok_if = metrics::is_success)]
 pub(crate) async fn post_player_transfer(
     State(state): State<SharedState>,
     Path(player_id): Path<String>,
@@ -239,6 +257,7 @@ pub(crate) async fn post_player_transfer(
     Ok(Json(()))
 }
 
+#[autometrics(ok_if = metrics::is_success)]
 pub(crate) async fn get_player_photo(
     State(state): State<SharedState>,
     Path(token): Path<String>,
@@ -295,6 +314,7 @@ pub(crate) async fn get_player_photo(
     Ok((headers, bytes.into()))
 }
 
+#[autometrics(ok_if = metrics::is_success)]
 pub(crate) async fn post_player_photo(
     State(state): State<SharedState>,
     Path(player_id): Path<String>,
@@ -341,6 +361,7 @@ pub(crate) async fn post_player_photo(
     Ok(Json(()))
 }
 
+#[autometrics(ok_if = metrics::is_success)]
 pub(crate) async fn play(
     State(state): State<SharedState>,
     Json(payload): Json<models::PlayRequest>,
@@ -381,6 +402,7 @@ pub(crate) async fn play(
     Ok(Json(()))
 }
 
+#[autometrics(ok_if = metrics::is_success)]
 pub(crate) async fn join(
     State(state): State<SharedState>,
     Extension(layer::Apid(apid)): Extension<layer::Apid>,
@@ -411,6 +433,9 @@ pub(crate) async fn join(
             StatusCode::NOT_FOUND
         })?;
     info!("Player {} joined room = {:?}", player_id, room_code);
+
+    Metrics::c_room_requests_total_incr(metrics_labels::room_requests(&room_code.to_string()));
+
     let state = state
         .get_room(&room_code)
         .await
@@ -430,12 +455,15 @@ pub(crate) async fn join(
     state.last_update.set_now();
 
     info!("Player {} joined with name '{}'", id, payload.name);
+    Metrics::c_players_total_incr();
+
     Ok(Json(models::JoinResponse {
         id: id.to_string(),
         room_code: room_code.to_string(),
     }))
 }
 
+#[autometrics(ok_if = metrics::is_success)]
 pub(crate) async fn resume(
     State(state): State<SharedState>,
     Extension(layer::Apid(apid)): Extension<layer::Apid>,
@@ -463,6 +491,8 @@ pub(crate) async fn resume(
                     .expect("player not found")
                     .folded = true;
 
+                Metrics::c_players_total_incr();
+
                 Some(player)
             }
             None => state.players.get_non_dormant(&apid).cloned(),
@@ -483,6 +513,7 @@ pub(crate) async fn resume(
     }))
 }
 
+#[autometrics(ok_if = metrics::is_success)]
 pub(crate) async fn new_room(
     State(state): State<SharedState>,
     Extension(layer::Apid(apid)): Extension<layer::Apid>,
@@ -492,7 +523,9 @@ pub(crate) async fn new_room(
     info!("Creating new room for player {}", player_id);
 
     let room_code = state.create_room(&player_id).await;
+
     info!("New room created for player {}: {:?}", player_id, room_code);
+    Metrics::c_room_requests_total_incr(metrics_labels::room_requests(&room_code.to_string()));
 
     let state = state
         .get_room(&room_code)
@@ -513,12 +546,15 @@ pub(crate) async fn new_room(
     state.last_update.set_now();
 
     info!("Player {} joined with name '{}'", id, payload.name);
+    Metrics::c_players_total_incr();
+
     Ok(Json(models::NewRoomResponse {
         id: id.to_string(),
         room_code: room_code.to_string(),
     }))
 }
 
+#[autometrics(ok_if = metrics::is_success)]
 pub(crate) async fn peek_room(
     State(state): State<SharedState>,
     Extension(layer::Apid(apid)): Extension<layer::Apid>,
@@ -543,6 +579,7 @@ pub(crate) async fn peek_room(
     Ok(Json(peek))
 }
 
+#[autometrics(ok_if = metrics::is_success)]
 pub(crate) async fn close_room(
     State(state): State<SharedState>,
     json: Option<Json<models::CloseRoomRequest>>,
@@ -562,6 +599,7 @@ pub(crate) async fn close_room(
     Ok(Json(()))
 }
 
+#[autometrics(ok_if = metrics::is_success)]
 pub(crate) async fn reset_room(
     State(state): State<SharedState>,
     room_code: Option<TypedHeader<models::headers::RoomCodeHeader>>,
@@ -578,6 +616,7 @@ pub(crate) async fn reset_room(
     Ok(Json(()))
 }
 
+#[autometrics(ok_if = metrics::is_success)]
 pub async fn start_ballot(
     State(state): State<SharedState>,
     Json(payload): Json<models::StartBallot>,
@@ -601,6 +640,7 @@ pub async fn start_ballot(
     Ok(Json(()))
 }
 
+#[autometrics(ok_if = metrics::is_success)]
 pub async fn cast_vote_in_ballot(
     State(state): State<SharedState>,
     Json(payload): Json<models::CastVoteRequest>,
@@ -618,17 +658,56 @@ pub async fn cast_vote_in_ballot(
 
     state.last_update.set_now();
     info!("Player {} voted: {}", payload.player_id, payload.vote);
+    Ok(Json(()))
+}
+
+#[autometrics(ok_if = metrics::is_success)]
+pub(crate) async fn pair(
+    State(state): State<SharedState>,
+    Json(payload): Json<models::PairRequest>,
+) -> JsonResult<()> {
+    let screen_code = payload.screen_code.parse().map_err(|_| {
+        info!(
+            "Failed to pair big screen: invalid screen code '{}'",
+            payload.screen_code
+        );
+        StatusCode::BAD_REQUEST
+    })?;
+
+    let room_code = payload.room_code.parse().map_err(|_| {
+        info!(
+            "Failed to pair big screen: invalid room code '{}'",
+            payload.room_code
+        );
+        StatusCode::BAD_REQUEST
+    })?;
+
+    state
+        .pair_screen_with_room(&screen_code, &room_code)
+        .await
+        .map_err(|_| {
+            info!(
+                "Failed to pair big screen: screen code '{:?}' or room code '{:?}' not found",
+                screen_code, room_code
+            );
+            StatusCode::NOT_FOUND
+        })?;
 
     Ok(Json(()))
 }
 
 mod utils {
+    use autometrics::autometrics;
     use axum::http::StatusCode;
     use axum_extra::TypedHeader;
     use tracing::info;
 
-    use crate::{models, state};
+    use crate::{
+        app_metrics::{metrics_labels, Metrics},
+        models, state,
+    };
 
+    #[autometrics]
     pub async fn validate_player(
         player_id: &str,
         state: &state::SharedState,
@@ -652,16 +731,21 @@ mod utils {
         room_code: Option<String>,
     ) -> Result<state::RoomState, StatusCode> {
         let state = match room_code.filter(|s: &String| !s.is_empty()) {
-            Some(room_code) => {
-                let room_code = room_code.parse().map_err(|_| {
+            Some(room_code_str) => {
+                let room_code = room_code_str.parse().map_err(|_| {
                     info!(
                         "Failed to wait for room update: invalid room code '{}'",
-                        room_code
+                        room_code_str
                     );
                     StatusCode::BAD_REQUEST
                 })?;
 
-                state.get_room(&room_code).await
+                let room_state = state.get_room(&room_code).await;
+                if room_state.is_some() {
+                    let labels = metrics_labels::room_requests(&room_code_str);
+                    Metrics::c_room_requests_total_incr(labels);
+                }
+                room_state
             }
             None => state.get_default_room().await,
         };
@@ -715,6 +799,38 @@ mod utils {
         Ok(room_code)
     }
 
+    pub async fn wait_by_screen_apid(
+        state: &state::SharedState,
+        query: models::PollQuery,
+        apid: &str,
+    ) -> Result<
+        (
+            Option<state::room::RoomCode>,
+            state::screens::PairScreenCode,
+        ),
+        StatusCode,
+    > {
+        let (room_code, pair_screen_code) = match state.register_big_screen(&apid).await {
+            Some(code) => (None, code),
+            None => {
+                let (code, screen) = state
+                    .get_big_screen_by_apid(&apid)
+                    .await
+                    .ok_or(StatusCode::NOT_FOUND)?;
+                let changed = wait_for_screen_update(&screen, query).await;
+                if changed {
+                    let screen = state.get_big_screen_by_code(&code).await;
+                    let screen = screen.ok_or(StatusCode::NOT_FOUND)?;
+                    (screen.room_code, code)
+                } else {
+                    (screen.room_code, code)
+                }
+            }
+        };
+
+        Ok((room_code, pair_screen_code))
+    }
+
     async fn wait_for_update(state: &state::RoomState, query: models::PollQuery) {
         if let Some(last_update) = query.since {
             let rx = {
@@ -722,14 +838,45 @@ mod utils {
                 state.last_update.wait_for(last_update.into())
             };
 
-            let timeout_ms = query.timeout.unwrap_or(5_000);
-            let timeout = std::time::Duration::from_millis(timeout_ms);
-
             tokio::select! {
                 _ = rx => {}
-                _ = tokio::time::sleep(timeout) => {}
+                _ = sleep_from_timeout_query(query.timeout) => {}
             }
         }
+    }
+
+    async fn wait_for_screen_update(
+        screen: &state::screens::Screen,
+        query: models::PollQuery,
+    ) -> bool {
+        match query.since {
+            Some(last_update) => {
+                let rx = screen.last_update.wait_for(last_update.into());
+
+                tokio::select! {
+                    _ = rx => true,
+                    _ = sleep_from_timeout_query(query.timeout) => false,
+                }
+            }
+            _ => false,
+        }
+    }
+
+    async fn sleep_from_timeout_query(timeout: Option<u64>) {
+        let timeout_ms = timeout.unwrap_or(5_000);
+        let timeout = std::time::Duration::from_millis(timeout_ms);
+        tokio::time::sleep(timeout).await;
+    }
+}
+
+mod metrics {
+    use axum::http::StatusCode;
+
+    pub fn is_success<T>(response: &Result<T, StatusCode>) -> bool {
+        !matches!(
+            response.as_ref().err(),
+            Some(&StatusCode::OK) | Some(&StatusCode::NOT_FOUND)
+        )
     }
 }
 
@@ -802,5 +949,9 @@ pub mod docs {
 
     pub fn cast_vote(op: TransformOperation) -> TransformOperation {
         op.description("Vote on a motion.")
+    }
+
+    pub fn pair(op: TransformOperation) -> TransformOperation {
+        op.description("Pairs a big screen with a room.")
     }
 }
