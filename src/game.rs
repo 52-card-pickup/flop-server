@@ -76,8 +76,8 @@ pub fn spawn_game_worker(shared_state: state::SharedState) -> tokio::task::JoinH
 
         if ballot.is_some() {
             let mut state = room_state.write().await;
-            if let Some(vote) = state.ballot.as_ref() {
-                if vote.end_time.as_u64() < state::dt::Instant::default().as_u64() {
+            if let Some(ballot) = state.ballot.as_ref() {
+                if ballot.end_time.as_u64() < state::dt::Instant::default().as_u64() {
                     end_ballot(&mut state).unwrap();
                 }
             }
@@ -1227,13 +1227,13 @@ pub(crate) fn player_start_ballot(
     action: state::ballot::BallotAction,
 ) -> Result<(), String> {
     if state.ballot.is_some() {
-        return Err("Vote already in progress".to_string());
+        return Err("Ballot already in progress".to_string());
     }
 
-    let mut vote = state::ballot::Ballot::default();
-    vote.action = action;
-    vote.end_time.add_seconds(60);
-    state.ballot = Some(vote);
+    let mut ballot = state::ballot::Ballot::default();
+    ballot.action = action;
+    ballot.end_time.add_seconds(60);
+    state.ballot = Some(ballot);
 
     Ok(())
 }
@@ -1245,73 +1245,68 @@ pub(crate) fn player_cast_vote_in_ballot(
 ) -> Result<(), String> {
     let voted = vote;
 
-    let vote = match &mut state.ballot {
-        Some(vote) => vote,
-        None => return Err("No vote in progress".to_string()),
+    let ballot = match &mut state.ballot {
+        Some(ballot) => ballot,
+        None => return Err("No ballot in progress".to_string()),
     };
 
-    if vote.end_time.as_u64() < state.last_update.as_u64() {
-        return Err("Vote has expired".to_string());
+    if ballot.end_time.as_u64() < state.last_update.as_u64() {
+        return Err("Ballot has expired".to_string());
     }
 
-    let player_ids_in_cast_votes = vote.votes.iter().map(|(id, _)| id).collect::<Vec<_>>();
-    let has_player_already_voted = player_ids_in_cast_votes.contains(&player_id);
-
-    if has_player_already_voted {
-        return Err("Player has already voted".to_string());
+    match ballot.votes.iter().find(|(id, _)| id == player_id) {
+        Some(_) => Err("Player has already voted".to_string()),
+        None => {
+            ballot.votes.push((player_id.clone(), voted));
+            if ballot.contains_all(&state.players) {
+                end_ballot(state)?;
+            }
+            Ok(())
+        }
     }
-
-    vote.votes.push((player_id.clone(), voted));
-    if vote.votes.len() == state.players.len() {
-        end_ballot(state)?;
-    }
-    Ok(())
 }
 
 pub(crate) fn end_ballot(state: &mut state::State) -> Result<(), String> {
     info!("Ending ballot");
 
-    let vote = match &state.ballot {
-        Some(vote) => vote,
-        None => return Err("No vote in progress".to_string()),
+    let ballot = match state.ballot.take() {
+        Some(ballot) => ballot,
+        None => return Err("No ballot in progress".to_string()),
     };
 
-    if (vote.votes.len() as f64) / (state.players.len() as f64) < 0.5 {
-        return Err("Not enough players voted".to_string());
-    }
-
-    let votes_for = vote.votes.iter().filter(|(_, vote)| *vote).count();
-    let votes_against = vote.votes.iter().filter(|(_, vote)| !*vote).count();
-
-    let majority_voted_for = votes_for > votes_against;
-
-    match &vote.action {
-        state::ballot::BallotAction::KickPlayer(player_id) => {
-            if majority_voted_for {
-                info!("Majority voted to kick player {}", player_id);
-                state
-                    .action_queue
-                    .push(state::ballot::BallotAction::KickPlayer(player_id.clone()));
+    match ballot.resolve(&state.players) {
+        Ok(state::ballot::BallotResult::MajorityVote) => {
+            info!("Majority vote in favour of action {:?}", ballot.action);
+            match &ballot.action {
+                state::ballot::BallotAction::KickPlayer(player_id) => {
+                    state
+                        .action_queue
+                        .push(state::ballot::BallotAction::KickPlayer(player_id.clone()));
+                }
+                state::ballot::BallotAction::DoubleBlinds => {
+                    state
+                        .action_queue
+                        .push(state::ballot::BallotAction::DoubleBlinds);
+                }
             }
+            Ok(())
         }
-        state::ballot::BallotAction::DoubleBlinds => {
-            if majority_voted_for {
-                state
-                    .action_queue
-                    .push(state::ballot::BallotAction::DoubleBlinds);
-            }
+        Ok(state::ballot::BallotResult::NoMajority) => {
+            info!("No majority vote for action {:?}, skipping", ballot.action);
+            Ok(())
         }
+        Err(err) => Err(err.to_string()),
     }
-
-    state.ballot = None;
-
-    Ok(())
 }
 
 fn double_blinds(state: &mut state::State) {
     let config = state.config.clone();
     let next_small_blind = state.config.small_blind() * 2;
     state.config = config.with_small_blind(next_small_blind);
+
+    state
+        .ticker
+        .emit(TickerEvent::BlindsDoubled(next_small_blind));
 }
 
 pub(crate) fn ballot_details(
@@ -1328,34 +1323,33 @@ pub(crate) fn ballot_details(
         return None;
     }
 
-    if let Some(vote) = &state.ballot {
-        if vote.end_time.as_u64() < state::dt::Instant::default().as_u64() {
+    if let Some(ballot) = &state.ballot {
+        if ballot.end_time.as_u64() < state::dt::Instant::default().as_u64() {
             return None;
         }
     }
 
-    match &state.ballot {
-        Some(vote) => match &vote.action {
-            state::ballot::BallotAction::KickPlayer(player_id) => {
-                if player.id == *player_id {
-                    return None;
-                }
-                let player_to_kick = state.players.get(player_id).unwrap();
-                let ballot_details = models::BallotDetails {
-                    action: models::BallotAction::KickPlayer(player_to_kick.name.clone()),
-                    expires_dt: vote.end_time.as_u64(),
-                };
-                return Some(ballot_details);
+    let ballot = state.ballot.as_ref()?;
+
+    match &ballot.action {
+        state::ballot::BallotAction::KickPlayer(player_id) => {
+            if player.id == *player_id {
+                return None;
             }
-            state::ballot::BallotAction::DoubleBlinds => {
-                let ballot_details = models::BallotDetails {
-                    action: models::BallotAction::DoubleBlinds,
-                    expires_dt: vote.end_time.as_u64(),
-                };
-                return Some(ballot_details);
-            }
-        },
-        None => None,
+            let player_to_kick = state.players.get(player_id).unwrap();
+            let ballot_details = models::BallotDetails {
+                action: models::BallotAction::KickPlayer(player_to_kick.name.clone()),
+                expires_dt: ballot.end_time.as_u64(),
+            };
+            return Some(ballot_details);
+        }
+        state::ballot::BallotAction::DoubleBlinds => {
+            let ballot_details = models::BallotDetails {
+                action: models::BallotAction::DoubleBlinds,
+                expires_dt: ballot.end_time.as_u64(),
+            };
+            return Some(ballot_details);
+        }
     }
 }
 
@@ -1394,23 +1388,26 @@ pub(crate) fn start_vote_options(
 
 fn consume_action_queue(state: &mut state::State) {
     while let Some(action) = state.action_queue.pop() {
-        match action {
-            state::ballot::BallotAction::KickPlayer(player_id) => {
-                info!("Kicking player {}", player_id);
-                state.players.remove(&player_id);
-                if state.players.len() < 2 {
-                    info!("Not enough players, pausing game until more players join");
-                    state.status = state::GameStatus::Joining;
-                    state.round = state::Round::default();
-                    for player in state.players.values_mut() {
-                        player.ttl = None;
-                    }
-                }
-            }
-            state::ballot::BallotAction::DoubleBlinds => {
-                info!("Doubling blinds to {}", state.config.small_blind() * 2);
-                double_blinds(state);
-            }
+        if let Err(err) = execute_ballot_action(state, &action) {
+            error!("Failed to execute ballot action {:?}: {}", action, err);
+        }
+    }
+}
+
+fn execute_ballot_action(
+    state: &mut state::State,
+    action: &state::ballot::BallotAction,
+) -> Result<(), String> {
+    match action {
+        state::ballot::BallotAction::KickPlayer(player_id) => {
+            info!("Kicking player {} due to vote", player_id);
+            remove_player(state, &player_id)
+        }
+        state::ballot::BallotAction::DoubleBlinds => {
+            let new_blind = state.config.small_blind() * 2;
+            info!("Doubling blinds to {} due to vote", new_blind);
+            double_blinds(state);
+            Ok(())
         }
     }
 }
@@ -1986,7 +1983,7 @@ mod tests {
         player_start_ballot(&mut state, B::DoubleBlinds).unwrap();
         assert_eq!(
             player_start_ballot(&mut state, B::DoubleBlinds),
-            Err("Vote already in progress".to_string())
+            Err("Ballot already in progress".to_string())
         );
     }
 
@@ -2000,7 +1997,7 @@ mod tests {
         state.ballot.as_mut().unwrap().end_time = instant;
         assert_eq!(
             player_cast_vote_in_ballot(&mut state, &player_1, true),
-            Err("Vote has expired".to_string())
+            Err("Ballot has expired".to_string())
         );
     }
 
@@ -2472,11 +2469,11 @@ mod tests {
 
                     assert_eq!(
                         state.players.get(&players[0]).unwrap().balance,
-                        100 - SMALL_BLIND
+                        100 - state.config.small_blind()
                     );
                     assert_eq!(
                         state.players.get(&players[1]).unwrap().balance,
-                        200 - BIG_BLIND
+                        200 - state.config.big_blind()
                     );
                     assert_eq!(state.players.get(&players[2]).unwrap().balance, 300);
                     assert_eq!(state.players.get(&players[3]).unwrap().balance, 400);
