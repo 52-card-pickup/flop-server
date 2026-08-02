@@ -779,6 +779,7 @@ pub mod ticker {
         BallotOpened(ballot::BallotAction),
         BallotClosed(ballot::BallotAction, BallotPassed, BallotClosedReason),
         PlayerVoted(PlayerId, PlayerVote),
+        BlindsDoubled(u64),
     }
 
     #[derive(Debug, Clone)]
@@ -950,6 +951,7 @@ pub mod ticker {
                         }
                     ),
                 ),
+                Self::BlindsDoubled(small_blind) => format!("New big blind is {}", small_blind * 2),
             }
         }
     }
@@ -1342,13 +1344,46 @@ pub mod config {
 
 pub mod ballot {
     use super::dt;
-    use super::PlayerId;
+    use super::{PlayerId, Players};
 
     #[derive(Debug, Clone, Default)]
     pub struct Ballot {
         pub end_time: dt::Instant,
         pub votes: Vec<(PlayerId, bool)>,
         pub action: BallotAction,
+    }
+
+    pub enum BallotResult {
+        MajorityVote,
+        NoMajority,
+    }
+
+    impl Ballot {
+        pub fn contains_all(&self, players: &Players) -> bool {
+            self.players_voted(players) == players.len()
+        }
+
+        pub fn players_voted(&self, players: &Players) -> usize {
+            players
+                .keys()
+                .filter(|&p| self.votes.iter().any(|(voted, _)| voted == p))
+                .count()
+        }
+
+        pub fn resolve(&self, players: &Players) -> Result<BallotResult, &'static str> {
+            if (self.players_voted(&players) as f64) / (players.len() as f64) < 0.5 {
+                return Err("Not enough players voted");
+            }
+
+            let (votes_for, votes_against) =
+                self.votes.iter().partition::<Vec<_>, _>(|(_, vote)| *vote);
+
+            if votes_for.len() > votes_against.len() {
+                Ok(BallotResult::MajorityVote)
+            } else {
+                Ok(BallotResult::NoMajority)
+            }
+        }
     }
 
     #[derive(Debug, Clone, PartialEq)]
